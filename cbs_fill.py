@@ -1,5 +1,6 @@
 """Fill a HOKA buyer CBS main sheet (template / Solid / Heather) from an internal CBS block."""
 import re
+from copy import copy
 
 from cbs_format import map_columns, find_label
 from xlutil import insert_row
@@ -253,6 +254,11 @@ def set_lop(ws, c, start, blk, changes):
         if a in rows and key in blk['rates']:
             r = rows[a]
             _set(ws, r, rate_col, blk['rates'][key], changes, ws.title)
+            rc = ws.cell(r, rate_col)
+            rc.number_format = '0%'
+            al = copy(rc.alignment)
+            al.horizontal = 'right'
+            rc.alignment = al
             if mat and lab:
                 _set(ws, r, uc, f'=SUM({L(uc)}{mat}:{L(uc)}{lab})*{L(rate_col)}{r}', changes, ws.title)
 
@@ -333,3 +339,23 @@ def calc_fob(ws):
             tr = _num(ws.cell(rr, rate_col).value) or 0
     base = mat + labor
     return round(base * (1 + oh + pf + tr), 6), round(mat, 4)
+
+
+FOB_FMT = '"$"#,##0.00'
+
+
+def fob_cells(ws):
+    """Value cells next to every 'FOB' label (top header + bottom), plus B8 ('FOB:')."""
+    out = []
+    for row in ws.iter_rows():
+        for c in row:
+            if isinstance(c.value, str) and c.value.strip().upper() in ('FOB', 'FOB:'):
+                v = ws.cell(c.row, c.column + 1)
+                if v.value not in (None, ''):
+                    out.append(v)
+    return out
+
+
+def format_fob(ws):
+    for c in fob_cells(ws):
+        c.number_format = FOB_FMT

@@ -67,7 +67,7 @@ def pick_block(blocks, gender):
             if want in _s(b['size']).upper():
                 return b, None
     b = blocks[-1] if blocks else None
-    return b, (f'size block "{want}" not found → used last block' if want else None)
+    return b, (dict(code='size_block', want=want) if want else None)
 
 
 def read_mnmk(wb_values):
@@ -75,7 +75,7 @@ def read_mnmk(wb_values):
     out, warns = [], []
     hidden = [ws.title for ws in wb_values.worksheets if ws.sheet_state != 'visible']
     if hidden:
-        warns.append('MNMK hidden sheets: ' + ', '.join(hidden))
+        warns.append(dict(code='hidden', src='MNMK', names=', '.join(hidden)))
     for ws in wb_values.worksheets:
         if ws.sheet_state != 'visible' or any(ws.title.strip().lower().startswith(s) for s in SKIP_SHEETS):
             continue
@@ -188,3 +188,8 @@ def panel_codes(ws):
     f = find_fields(ws, 1, 12)
     txt = _s(ws.cell(*f['fab']).value) if 'fab' in f else ''
     return {t for t in re.split(r'[\s/,()#]+', txt.upper()) if len(t) >= 5 and re.search(r'\d', t)}
+
+
+def one_pc_one_way(text):
+    t = re.sub(r'\s+', '', _s(text).upper())
+    return '1PC1WAY' in t or ('1PC' in t and '1WAY' in t)

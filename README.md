@@ -1,6 +1,6 @@
 # HOKA CBS Builder (Streamlit)
 
-Internal CBS → 바이어 제출용 HOKA CBS 자동 생성 + Internal 서식 정리. UI: KO / EN / VI
+Internal CBS → (클릭 한 번) 정돈된 Internal + 바이어 제출용 HOKA CBS. 여러 스타일 동시 처리(스타일번호 7자리로 자동 묶음). UI: 한국어 / English / Tiếng Việt
 
 ## 실행
 ```
@@ -8,6 +8,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 배포: GitHub repo(private 권장)에 올리고 Streamlit Community Cloud에서 `app.py` 지정.
+`packages.txt`(libreoffice-draw)는 Internal 스케치가 WMF/EMF일 때 PNG 변환용 — 없으면 해당 스타일만 경고 후 스케치 생략.
 
 ## 업로드 조합
 | 경우 | Internal | 바이어 template | 이전 제출본 | MNMK |
@@ -27,7 +28,9 @@ streamlit run app.py
   internal yy로 역산 → `((IN/36)+Y)/Garment Q'ty = yy`. 한 원단이 여러 시트면 보조 시트(BIAS CUT 등)는 그대로, 메인 시트 = yy − 보조 yy.
 - 사이즈 블록: 남 M / 여 S. MNMK 숨김 시트·Internal 숨김 시트는 경고.
 - 파일명: 이전 바이어 파일명 그대로, 공장코드 HJ → PIVNVN, 날짜 MMDDYYYY(작성일).
-- Internal 서식 정리: 단가·YY 최대 4자리, FOB·마진·Net·OH/Profit/Finance 2자리. XML 직접 수정이라 이미지(WMF 포함) 그대로 유지.
+- Internal 서식 정리: 최종가격(internal 합계·open FOB·상단 FOB)만 소수점 2자리, 나머지 숫자는 최대 4자리. XML 직접 수정이라 이미지(WMF 포함) 그대로 유지.
+- 바이어 CBS: 상단 FOB 왼쪽에 Internal 가먼트 스케치 삽입, FOB는 소수점 2자리, OH/Profit/Transportation 비율은 5%/5%/3%(오른쪽 정렬).
+- Self(body) 마커는 1pc / 1way(lengthwise) 원칙 — MNMK(또는 원단 시트) BASIC SIZE 문구에 "1PC 1 WAY"가 없으면 실행 시 맨 위에 빨간 경고.
 
 ## 알려진 제한
 - 바이어 template/이전 제출본에 WMF/EMF 이미지가 있으면 결과 파일에서 빠짐(경고 표시).

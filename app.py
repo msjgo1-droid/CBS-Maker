@@ -1,202 +1,258 @@
-"""HOKA CBS Builder — Streamlit app (KO / EN / VI)."""
+"""HOKA CBS Builder — Streamlit app (KO / EN / VI).
+One click per batch: formatted internal CBS + buyer CBS for every style uploaded."""
 import datetime as dt
 import io
+import zipfile
 
-import openpyxl
 import pandas as pd
 import streamlit as st
 
-from cbs_fill import is_main_sheet
-from cbs_format import normalize_bytes
-from engine import generate
-from internal import read_internal
-from panels import read_mnmk, pick_block, crop_marker
+from engine import process_style, group_files, clean_name
 
 st.set_page_config(page_title='HOKA CBS Builder', page_icon='🧾', layout='wide')
 
+LANGS = {'한국어': 'KO', 'English': 'EN', 'Tiếng Việt': 'VI'}
+lang = LANGS[st.sidebar.radio('Language / 언어 / Ngôn ngữ', list(LANGS))]
+
 T = {
-    'title': {'KO': 'HOKA CBS 빌더', 'EN': 'HOKA CBS Builder', 'VI': 'HOKA CBS Builder'},
-    'tab_build': {'KO': '① 바이어 CBS 만들기', 'EN': '① Build buyer CBS', 'VI': '① Tạo CBS cho buyer'},
-    'tab_fmt': {'KO': '② Internal 서식 정리', 'EN': '② Format internal CBS', 'VI': '② Định dạng CBS nội bộ'},
-    'up_int': {'KO': 'Internal CBS (필수)', 'EN': 'Internal CBS (required)', 'VI': 'CBS nội bộ (bắt buộc)'},
-    'up_base': {'KO': '바이어 공란 template', 'EN': 'Buyer blank template', 'VI': 'Template trống của buyer'},
-    'up_prev': {'KO': '이전 제출본 (CO 스타일)', 'EN': 'Previous submission (CO style)', 'VI': 'Bản đã nộp trước (style CO)'},
-    'up_mnmk': {'KO': 'MNMK (YY REQUEST) 파일', 'EN': 'MNMK (YY REQUEST) file', 'VI': 'File MNMK (YY REQUEST)'},
-    'need_tpl': {'KO': '바이어 template 또는 이전 제출본 중 하나는 꼭 올려주세요.',
-                 'EN': 'Upload a buyer template or a previous submission.',
-                 'VI': 'Hãy tải lên template của buyer hoặc bản đã nộp trước.'},
-    'mode': {'KO': '처리 방식', 'EN': 'Mode', 'VI': 'Chế độ'},
-    'analysis': {'KO': 'Internal 분석', 'EN': 'Internal analysis', 'VI': 'Phân tích CBS nội bộ'},
-    'blocks': {'KO': '블록 선택 (시트별)', 'EN': 'Block per sheet', 'VI': 'Chọn block cho từng sheet'},
-    'match': {'KO': '항목 매칭 (수정 가능)', 'EN': 'Item matching (editable)', 'VI': 'Ghép hạng mục (có thể sửa)'},
-    'apply': {'KO': '매칭 적용해서 다시 만들기', 'EN': 'Re-build with this matching', 'VI': 'Tạo lại với ghép này'},
-    'panels': {'KO': '원단(마커) 시트', 'EN': 'Fabric (marker) sheets', 'VI': 'Sheet vải (sơ đồ)'},
-    'crop': {'KO': 'MNMK 사진에서 마커 부분만 자르기', 'EN': 'Crop MNMK image to the marker',
-             'VI': 'Cắt ảnh MNMK chỉ lấy phần sơ đồ'},
-    'fname': {'KO': '파일명', 'EN': 'File name', 'VI': 'Tên file'},
-    'download': {'KO': '바이어 CBS 다운로드', 'EN': 'Download buyer CBS', 'VI': 'Tải CBS cho buyer'},
-    'changes': {'KO': '변경 내역', 'EN': 'Changes', 'VI': 'Thay đổi'},
-    'warn': {'KO': '확인 필요', 'EN': 'Check', 'VI': 'Cần kiểm tra'},
-    'fob': {'KO': 'FOB 검증', 'EN': 'FOB check', 'VI': 'Kiểm tra FOB'},
-    'fmt_help': {'KO': '1193712 기준 서식: 단가·YY 소수점 최대 4자리, FOB·마진·Net·OH/Profit/Finance 2자리. 값·수식은 그대로.',
-                 'EN': 'Standard format (1193712): prices/YY up to 4 decimals; FOB, margin, Net, OH/Profit/Finance 2 decimals. Values untouched.',
-                 'VI': 'Định dạng chuẩn (1193712): đơn giá/YY tối đa 4 số lẻ; FOB, margin, Net, OH/Profit/Finance 2 số lẻ. Giữ nguyên giá trị.'},
-    'all_tabs': {'KO': '모든 탭 적용 (기본: 맨 앞 탭만)', 'EN': 'All tabs (default: first tab only)',
-                 'VI': 'Tất cả các tab (mặc định: tab đầu)'},
-    'skip': {'KO': '(빼기)', 'EN': '(skip)', 'VI': '(bỏ qua)'},
-    'auto': {'KO': '(자동)', 'EN': '(auto)', 'VI': '(tự động)'},
+    'title': ('HOKA CBS 빌더', 'HOKA CBS Builder', 'Công cụ CBS HOKA'),
+    'intro': ('파일을 한꺼번에 올리면 스타일번호(7자리)로 자동으로 묶어서, 스타일마다 '
+              '**정돈된 Internal CBS + 바이어 CBS** 2개 파일을 만들어요.',
+              'Upload everything at once — files are grouped by 7-digit style number and each style gets '
+              '**a formatted internal CBS + a buyer CBS**.',
+              'Tải tất cả file cùng lúc — hệ thống tự nhóm theo mã style (7 số) và mỗi style tạo ra '
+              '**CBS nội bộ đã chuẩn hoá + CBS cho buyer**.'),
+    'up_int': ('① Internal CBS (필수, 여러 개 가능)', '① Internal CBS (required, multiple)',
+               '① CBS nội bộ (bắt buộc, nhiều file)'),
+    'up_base': ('② 바이어 공란 template', '② Buyer blank template', '② Template trống của buyer'),
+    'up_prev': ('③ 이전 제출본 (CO 스타일)', '③ Previous submission (CO styles)', '③ Bản đã nộp trước (style CO)'),
+    'up_mnmk': ('④ MNMK (YY REQUEST)', '④ MNMK (YY REQUEST)', '④ MNMK (YY REQUEST)'),
+    'styles': ('스타일별 파일 묶음', 'Files per style', 'File theo từng style'),
+    'run': ('▶ 실행 (Internal 정리 + 바이어 CBS 생성)', '▶ Run (format internal + build buyer CBS)',
+            '▶ Chạy (chuẩn hoá CBS nội bộ + tạo CBS buyer)'),
+    'crop': ('MNMK 사진에서 마커 부분만 자르기', 'Crop MNMK picture to the marker', 'Cắt ảnh MNMK chỉ lấy sơ đồ'),
+    'loose': ('스타일번호를 못 찾았거나 중복된 파일', 'Files without a style number / duplicates',
+              'File không có mã style / bị trùng'),
+    'no_tpl': ('바이어 template 또는 이전 제출본이 없어서 건너뜀', 'skipped — no buyer template or previous submission',
+               'bỏ qua — không có template buyer hoặc bản đã nộp'),
+    'no_int': ('Internal CBS가 없어서 건너뜀', 'skipped — no internal CBS', 'bỏ qua — không có CBS nội bộ'),
+    'summary': ('결과 요약', 'Summary', 'Tóm tắt'),
+    'dl_all': ('⬇️ 전체 다운로드 (zip)', '⬇️ Download all (zip)', '⬇️ Tải tất cả (zip)'),
+    'dl_buyer': ('⬇️ 바이어 CBS', '⬇️ Buyer CBS', '⬇️ CBS buyer'),
+    'dl_int': ('⬇️ 정돈된 Internal', '⬇️ Formatted internal', '⬇️ CBS nội bộ đã chuẩn hoá'),
+    'blocks': ('Internal 블록 (시트별)', 'Internal block per sheet', 'Block nội bộ cho từng sheet'),
+    'sketch': ('바이어 CBS 상단 스케치', 'Header sketch', 'Hình phác thảo ở đầu trang'),
+    'match': ('항목 매칭 (수정 가능)', 'Item matching (editable)', 'Ghép hạng mục (có thể sửa)'),
+    'apply': ('이 스타일 다시 만들기', 'Re-build this style', 'Tạo lại style này'),
+    'panels': ('원단(마커) 시트', 'Fabric (marker) sheets', 'Sheet vải (sơ đồ)'),
+    'changes': ('변경 내역', 'Changes', 'Thay đổi'),
+    'fname': ('파일명', 'File name', 'Tên file'),
+    'auto': ('(자동)', '(auto)', '(tự động)'),
+    'skip': ('(빼기)', '(skip)', '(bỏ qua)'),
+    'self_bad': ('🚨 Self(body) MNMK가 1pc / 1way(lengthwise)가 아닌 스타일',
+                 '🚨 Styles whose Self (body) marker is NOT 1pc / 1way (lengthwise)',
+                 '🚨 Style có sơ đồ Self (thân) KHÔNG phải 1pc / 1way (theo chiều dọc)'),
+    'ok': ('문제 없음', 'OK', 'OK'),
+    'col_style': ('스타일', 'Style', 'Style'), 'col_mode': ('방식', 'Mode', 'Chế độ'),
+    'col_fob': ('바이어 FOB', 'Buyer FOB', 'FOB buyer'), 'col_ifob': ('Internal FOB', 'Internal FOB', 'FOB nội bộ'),
+    'col_self': ('Self 1pc/1way', 'Self 1pc/1way', 'Self 1pc/1way'), 'col_warn': ('경고', 'Warnings', 'Cảnh báo'),
 }
-lang = st.sidebar.radio('Language', ['KO', 'EN', 'VI'], horizontal=True)
-t = lambda k: T[k][lang]
+t = lambda k: T[k][['KO', 'EN', 'VI'].index(lang)]
+
+WARN = {
+    'not_1pc': ('Self(body) 마커가 1pc/1way가 아님 — [{sheet}] "{text}"',
+                'Self (body) marker is not 1pc/1way — [{sheet}] "{text}"',
+                'Sơ đồ Self (thân) không phải 1pc/1way — [{sheet}] "{text}"'),
+    'hidden': ('{src} 숨김 시트: {names}', '{src} hidden sheets: {names}', 'Sheet ẩn trong {src}: {names}'),
+    'wmf': ('{src}에 WMF/EMF 이미지가 있어 결과 파일에서 빠짐 — 직접 다시 넣어주세요',
+            '{src} has WMF/EMF pictures — they are dropped in the output, re-insert manually',
+            '{src} có ảnh WMF/EMF — sẽ bị mất trong file kết quả, hãy chèn lại thủ công'),
+    'block': ('Internal 블록 #{block}: {text}', 'Internal block #{block}: {text}', 'Block nội bộ #{block}: {text}'),
+    'size_block': ('[{sheet}] MNMK에서 "{want}" 사이즈 블록을 못 찾아 마지막 블록 사용',
+                   '[{sheet}] MNMK size block "{want}" not found — last block used',
+                   '[{sheet}] Không tìm thấy block size "{want}" trong MNMK — dùng block cuối'),
+    'panel_nomatch': ('[{sheet}] 원단 시트와 맞는 원단 행이 없어 마커 길이 재계산 안 함',
+                      '[{sheet}] no fabric row matched — marker length not recalculated',
+                      '[{sheet}] không khớp dòng vải — không tính lại chiều dài sơ đồ'),
+    'no_match': ('[{sheet}] {row}행 "{comp}": Internal에 해당 항목 없음 (그대로 둠)',
+                 '[{sheet}] row {row} "{comp}": no internal item (left as is)',
+                 '[{sheet}] dòng {row} "{comp}": không có trong CBS nội bộ (giữ nguyên)'),
+    'row_added': ('[{sheet}] {row}행 추가: {comp} ({sec})', '[{sheet}] row {row} added: {comp} ({sec})',
+                  '[{sheet}] thêm dòng {row}: {comp} ({sec})'),
+    'not_placed': ('[{sheet}] 넣지 못한 Internal 항목: {items}', '[{sheet}] internal items not placed: {items}',
+                   '[{sheet}] hạng mục nội bộ chưa đưa vào: {items}'),
+    'no_sketch': ('Internal에서 가먼트 스케치를 못 찾음', 'No garment sketch found in internal',
+                  'Không tìm thấy hình phác thảo trong CBS nội bộ'),
+    'sketch_conv': ('스케치 이미지({ext}) 변환 실패', 'Sketch picture ({ext}) could not be converted',
+                    'Không chuyển đổi được ảnh phác thảo ({ext})'),
+}
+
+
+def wtxt(w):
+    tpl = WARN.get(w['code'], ('{code}',) * 3)[['KO', 'EN', 'VI'].index(lang)]
+    try:
+        return tpl.format(**w)
+    except Exception:                                    # noqa
+        return str(w)
+
 
 st.title(t('title'))
-tab1, tab2 = st.tabs([t('tab_build'), t('tab_fmt')])
+st.markdown(t('intro'))
+
+c1, c2 = st.columns(2)
+f_int = c1.file_uploader(t('up_int'), type=['xlsx'], accept_multiple_files=True, key='int')
+f_base = c1.file_uploader(t('up_base'), type=['xlsx'], accept_multiple_files=True, key='base')
+f_prev = c2.file_uploader(t('up_prev'), type=['xlsx'], accept_multiple_files=True, key='prev')
+f_mnmk = c2.file_uploader(t('up_mnmk'), type=['xlsx'], accept_multiple_files=True, key='mnmk')
+crop = st.sidebar.checkbox(t('crop'), value=True)
+
+pack = lambda fs: [(f.name, f.getvalue()) for f in (fs or [])]
+groups, loose = group_files(pack(f_int), pack(f_base), pack(f_prev), pack(f_mnmk))
+
+if groups:
+    st.subheader(t('styles'))
+    rows = []
+    for stl, g in sorted(groups.items()):
+        mode = ('CO + MNMK' if 'prev' in g and 'mnmk' in g else 'CO' if 'prev' in g else
+                'NEW + MNMK' if 'mnmk' in g else 'TEMPLATE')
+        rows.append({t('col_style'): stl, t('col_mode'): mode,
+                     'Internal': clean_name(g['internal'][0]) if 'internal' in g else '❌',
+                     'Template': clean_name(g['base'][0]) if 'base' in g else '',
+                     'Previous': clean_name(g['prev'][0]) if 'prev' in g else '',
+                     'MNMK': clean_name(g['mnmk'][0]) if 'mnmk' in g else ''})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+if loose:
+    st.warning(t('loose') + ': ' + ', '.join(f'{n} ({r})' for r, n in loose))
+
+res = st.session_state.setdefault('results', {})
+opts = st.session_state.setdefault('opts', {})
 
 
-def up_bytes(f):
-    return f.getvalue() if f else None
+def run_one(stl, g):
+    if 'internal' not in g:
+        res[stl] = dict(error=t('no_int'))
+        return
+    if not ('base' in g or 'prev' in g):
+        res[stl] = dict(error=t('no_tpl'))
+        return
+    o = opts.get(stl, {})
+    try:
+        data, rep = process_style(g, crop=crop, block_map=o.get('block_map'), manual=o.get('manual'),
+                                  sketch=o.get('sketch', 0))
+        res[stl] = dict(data=data, rep=rep, files=g)
+    except Exception as e:                               # noqa
+        res[stl] = dict(error=f'{type(e).__name__}: {e}')
 
 
-# ======================= TAB 1 =======================
-with tab1:
-    c1, c2 = st.columns(2)
-    f_int = c1.file_uploader(t('up_int'), type=['xlsx'], key='int')
-    f_base = c1.file_uploader(t('up_base'), type=['xlsx'], key='base')
-    f_prev = c2.file_uploader(t('up_prev'), type=['xlsx'], key='prev')
-    f_mnmk = c2.file_uploader(t('up_mnmk'), type=['xlsx'], key='mnmk')
+if groups and st.button(t('run'), type='primary', use_container_width=True):
+    res.clear()
+    bar = st.progress(0.0)
+    for i, (stl, g) in enumerate(sorted(groups.items())):
+        bar.progress(i / len(groups), text=stl)
+        run_one(stl, g)
+    bar.progress(1.0, text='done')
 
-    if f_int and not (f_base or f_prev):
-        st.info(t('need_tpl'))
-    if f_int and (f_base or f_prev):
-        mode = ('CO + MNMK' if f_prev and f_mnmk else 'CO' if f_prev else
-                'NEW / MNMK' if f_mnmk else 'TEMPLATE ONLY')
-        st.caption(f"{t('mode')}: **{mode}**")
+if res:
+    # ---------- 1pc / 1way alert first ----------
+    bad = [(s, r['rep']['self_check']) for s, r in res.items() if 'rep' in r and r['rep']['self_check']
+           and r['rep']['self_check']['ok'] is False]
+    if bad:
+        st.error(t('self_bad') + '\n\n' + '\n'.join(f"- **{s}** — [{c['sheet']}] {c['text']}" for s, c in bad))
 
-        info, _, _ = read_internal(io.BytesIO(up_bytes(f_int)), f_int.name)
-        with st.expander(t('analysis'), expanded=True):
-            st.write(f"Tab **{info['tab']}** · style **{info['style']}** · gender **{info['gender']}** · "
-                     f"fit stage **{info['fit']}** · buy stage **{info['tab_info']['buy']}**")
-            df = pd.DataFrame([dict(block=b['idx'], rows=f"{b['r0']}-{b['r1']}", header=b['stage_hdr'],
-                                    FOB=round(b['fob'], 2) if b['fob'] else None,
-                                    note=', '.join(f"{d} ${p}" for d, p in b['notes']),
-                                    submitted='✅' if b['submitted'] else '—',
-                                    heather='Heather' if b['heather'] else '',
-                                    warning='; '.join(b['warn'])) for b in info['blocks']])
-            st.dataframe(df, hide_index=True, use_container_width=True)
-            if info['hidden']:
-                st.warning('Internal hidden sheets: ' + ', '.join(info['hidden']))
+    st.subheader(t('summary'))
+    srows = []
+    for s, r in sorted(res.items()):
+        if 'error' in r:
+            srows.append({t('col_style'): s, t('col_warn'): '❌ ' + r['error']})
+            continue
+        rep = r['rep']
+        sc = rep['self_check']
+        srows.append({t('col_style'): s,
+                      t('col_fob'): ' / '.join(f"{k}: ${v['fob']:.2f}" for k, v in rep['sheets'].items()),
+                      t('col_ifob'): ' / '.join(f"${(v['internal_fob'] or 0):.2f}" for v in rep['sheets'].values()),
+                      t('col_self'): '—' if not sc or sc['ok'] is None else ('✅' if sc['ok'] else '🚨'),
+                      t('col_warn'): len(rep['warnings']), t('fname'): rep['filename']})
+    st.dataframe(pd.DataFrame(srows), hide_index=True, use_container_width=True)
 
-        # main sheets that will exist in output
-        ref = openpyxl.load_workbook(io.BytesIO(up_bytes(f_prev or f_base)))
-        titles = [s.title for s in ref.worksheets if is_main_sheet(s)]
-        st.subheader(t('blocks'))
-        bopts = [b['idx'] for b in info['blocks']]
-        from engine import default_block_map
-        dmap = default_block_map(info, titles)
-        cols = st.columns(max(len(titles), 1))
-        bmap = {}
-        for i, tt in enumerate(titles):
-            bmap[tt] = cols[i].selectbox(tt, bopts, index=bopts.index(dmap[tt]),
-                                         format_func=lambda k: f"#{k} {info['blocks'][k]['stage_hdr']} "
-                                                               f"${round(info['blocks'][k]['fob'] or 0, 2)}",
-                                         key=f'b_{tt}')
-        crop = st.checkbox(t('crop'), value=True) if f_mnmk else True
+    zbuf = io.BytesIO()
+    with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for s, r in res.items():
+            if 'rep' in r:
+                z.writestr(f"{s}/{r['rep']['filename']}", r['data'])
+                n, d = r['rep']['internal_formatted']
+                z.writestr(f'{s}/{n}', d)
+    st.download_button(t('dl_all'), zbuf.getvalue(), file_name=f'HOKA_CBS_{dt.date.today():%m%d%Y}.zip',
+                       type='primary', use_container_width=True)
 
-        manual = st.session_state.get('manual', {})
-        kw = dict(internal=up_bytes(f_int), internal_name=f_int.name,
-                  base=up_bytes(f_base), base_name=f_base.name if f_base else '',
-                  prev=up_bytes(f_prev), prev_name=f_prev.name if f_prev else '',
-                  mnmk=up_bytes(f_mnmk), block_map=bmap, manual=manual, crop=crop)
-        try:
-            data, rep = generate(**kw)
-        except Exception as e:                                  # noqa
-            st.error(f'{type(e).__name__}: {e}')
-            st.stop()
+    # ---------- per style ----------
+    for s, r in sorted(res.items()):
+        if 'rep' not in r:
+            continue
+        rep = r['rep']
+        icon = '🚨' if rep['self_check'] and rep['self_check']['ok'] is False else ('⚠️' if rep['warnings'] else '✅')
+        with st.expander(f"{icon} {s} — {rep['filename']}"):
+            for w in rep['warnings']:
+                (st.error if w['code'] == 'not_1pc' else st.warning)(wtxt(w))
+            fname = st.text_input(t('fname'), rep['filename'], key=f'fn_{s}')
+            d1, d2 = st.columns(2)
+            d1.download_button(t('dl_buyer'), r['data'], file_name=fname, key=f'db_{s}')
+            n, d = rep['internal_formatted']
+            d2.download_button(t('dl_int'), d, file_name=n, key=f'di_{s}')
 
-        # ---- warnings + FOB ----
-        warns = list(rep['warnings'])
-        for s, r in rep['sheets'].items():
-            if r['unplaced']:
-                warns.append(f'[{s}] not placed: ' + ', '.join(r['unplaced']))
-            for a in r['added']:
-                warns.append(f"[{s}] row added r{a['row']}: {a['component']} ({a['section']})")
-            for l in r['log']:
-                if l['how'] == 'NO MATCH':
-                    warns.append(f"[{s}] r{l['row']} {l['component']}: no internal item")
-        if warns:
-            st.subheader('⚠️ ' + t('warn'))
-            for w in warns:
-                st.warning(w)
-        st.subheader(t('fob'))
-        st.dataframe(pd.DataFrame([dict(sheet=s, block=r['block'], buyer_FOB=round(r['fob'], 4),
-                                         internal_FOB=round(r['internal_fob'] or 0, 4),
-                                         diff=round(r['fob'] - (r['internal_fob'] or 0), 4),
-                                         changes=len(r['changes'])) for s, r in rep['sheets'].items()]),
-                     hide_index=True, use_container_width=True)
-
-        # ---- matching editor ----
-        st.subheader(t('match'))
-        new_manual = {}
-        for s, r in rep['sheets'].items():
-            opts = [t('auto'), t('skip')] + [f'{i}: {x}' for i, x in enumerate(r['lines'])]
-            rows = []
-            for l in r['log']:
-                cur = f"{l['line']}: {r['lines'][l['line']]}" if 'line' in l else ''
-                rows.append(dict(row=l['row'], component=l['component'], method=l['how'],
-                                 internal=cur, change=t('auto')))
-            ed = st.data_editor(pd.DataFrame(rows), key=f'ed_{s}', hide_index=True, use_container_width=True,
-                                disabled=['row', 'component', 'method', 'internal'],
-                                column_config={'change': st.column_config.SelectboxColumn(options=opts)})
-            m = {}
-            for _, x in ed.iterrows():
-                if x['change'] == t('skip'):
-                    m[int(x['row'])] = -1
-                elif x['change'] not in (t('auto'), None, ''):
-                    m[int(x['row'])] = int(str(x['change']).split(':')[0])
-            if m:
-                new_manual[s] = m
-        if st.button(t('apply')):
-            st.session_state['manual'] = new_manual
-            st.rerun()
-
-        # ---- panels ----
-        st.subheader(t('panels'))
-        if rep['panels']:
-            st.dataframe(pd.DataFrame([dict(sheet=p['panel'], component=p['component'], yy=p['net'],
-                                            aux=', '.join(p['aux']), aux_yy=p['aux_yy'],
-                                            marker=f"{p['marker'][0]} Y {p['marker'][1]} IN" if p['marker'] else '',
-                                            check=p['check']) for p in rep['panels']]),
-                         hide_index=True, use_container_width=True)
-        if f_mnmk:
-            mwb = openpyxl.load_workbook(io.BytesIO(up_bytes(f_mnmk)), data_only=True)
-            ms, _ = read_mnmk(mwb)
-            pc = st.columns(min(3, max(len(ms), 1)))
-            for i, m in enumerate(ms):
-                b, _ = pick_block(m['blocks'], info['gender'])
-                if b and b['image'] is not None:
-                    img = b['image']._data()
-                    if crop:
-                        img = crop_marker(img)[0]
-                    pc[i % len(pc)].image(img, caption=f"{m['title']} · {b['marker_y']}Y {b['marker_in']}in · "
-                                                       f"eff {b['eff']}", use_container_width=True)
-
-        with st.expander(t('changes')):
-            ch = [dict(c) for r in rep['sheets'].values() for c in r['changes']]
-            st.dataframe(pd.DataFrame(ch), hide_index=True, use_container_width=True)
-
-        fname = st.text_input(t('fname'), rep['filename'])
-        st.download_button('⬇️ ' + t('download'), data, file_name=fname, type='primary',
-                           mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
-# ======================= TAB 2 =======================
-with tab2:
-    st.caption(t('fmt_help'))
-    files = st.file_uploader(t('up_int'), type=['xlsx'], accept_multiple_files=True, key='fmt')
-    all_tabs = st.checkbox(t('all_tabs'))
-    for f in files or []:
-        data_out, log = normalize_bytes(f.getvalue(), all_sheets=all_tabs)
-        skipped = [l for l in log if '!' in l]
-        st.write(f"**{f.name}** — {sum('ok' in l for l in log)} blocks" + (f" · ⚠️ {len(skipped)}" if skipped else ''))
-        for l in skipped:
-            st.warning(l)
-        st.download_button('⬇️ ' + f.name, data_out, file_name=f.name, key=f'dl_{f.name}')
+            o = opts.setdefault(s, {})
+            # blocks
+            info = rep['internal']
+            st.markdown(f"**{t('blocks')}** · tab `{info['tab']}` · gender `{info['gender']}` · fit `{info['fit']}`")
+            bopts = [b['idx'] for b in info['blocks']]
+            bm = {}
+            cols = st.columns(max(len(rep['sheets']), 1))
+            for i, sh in enumerate(rep['sheets']):
+                cur = rep['sheets'][sh]['block']
+                bm[sh] = cols[i].selectbox(sh, bopts, index=bopts.index(cur), key=f'bl_{s}_{sh}',
+                                           format_func=lambda k, info=info: f"#{k} {info['blocks'][k]['stage_hdr'][:25]} "
+                                                                 f"${(info['blocks'][k]['fob'] or 0):.2f}"
+                                                                 f"{' ✅' if info['blocks'][k]['submitted'] else ''}")
+            # sketch
+            if rep.get('sketches'):
+                st.markdown(f"**{t('sketch')}**")
+                sk = st.radio(t('sketch'), list(range(len(rep['sketches']))), index=o.get('sketch', 0),
+                              horizontal=True, key=f'sk_{s}', label_visibility='collapsed',
+                              format_func=lambda k, rep=rep: f"#{k} r{rep['sketches'][k]['row']} {rep['sketches'][k]['name']}")
+                if rep.get('sketch_png'):
+                    st.image(rep['sketch_png'], width=260)
+            else:
+                sk = 0
+            # matching
+            st.markdown(f"**{t('match')}**")
+            man = {}
+            for sh, sr in rep['sheets'].items():
+                options = [t('auto'), t('skip')] + [f'{i}: {x}' for i, x in enumerate(sr['lines'])]
+                df = pd.DataFrame([dict(row=l['row'], component=l['component'], method=l['how'],
+                                        internal=f"{l['line']}: {sr['lines'][l['line']]}" if 'line' in l else '',
+                                        change=t('auto')) for l in sr['log']])
+                st.caption(sh)
+                ed = st.data_editor(df, key=f'ed_{s}_{sh}', hide_index=True, use_container_width=True,
+                                    disabled=['row', 'component', 'method', 'internal'],
+                                    column_config={'change': st.column_config.SelectboxColumn(options=options)})
+                m = {}
+                for _, x in ed.iterrows():
+                    if x['change'] == t('skip'):
+                        m[int(x['row'])] = -1
+                    elif x['change'] not in (t('auto'), None, ''):
+                        m[int(x['row'])] = int(str(x['change']).split(':')[0])
+                if m:
+                    man[sh] = m
+            if st.button(t('apply'), key=f'ap_{s}'):
+                o.update(block_map=bm, sketch=sk, manual=man or o.get('manual'))
+                run_one(s, r['files'])
+                st.rerun()
+            # panels
+            if rep['panels']:
+                st.markdown(f"**{t('panels')}**")
+                st.dataframe(pd.DataFrame([dict(sheet=p['panel'], component=p['component'], yy=p['net'],
+                                                aux=', '.join(p['aux']), marker=f"{p['marker'][0]} Y {p['marker'][1]} IN"
+                                                if p['marker'] else '', check=p['check']) for p in rep['panels']]),
+                             hide_index=True, use_container_width=True)
+            if st.toggle(t('changes'), key=f'ch_{s}'):
+                st.dataframe(pd.DataFrame([dict(c) for v in rep['sheets'].values() for c in v['changes']]),
+                             hide_index=True, use_container_width=True)

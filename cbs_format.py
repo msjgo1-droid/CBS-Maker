@@ -1,8 +1,9 @@
 """HOKA internal CBS -> standard number-format normalizer.
 
-Rules (from 1193712 good example):
-  - unit prices / line totals / subtotals : up to 4 decimals  ($0.20, $0.316, $0.5231)
-  - margin, FOB, Net, Others, Profit/OH/Finance amounts : 2 decimals
+Rules:
+  - final prices only (internal total, open/buyer FOB, header FOB): 2 decimals
+  - every other number: up to 4 decimals ($0.20, $0.316, $0.5231, 1.03, 0.9852)
+  - percentages: margin / Others rate 0.00%, buyer LOSS & Profit/OH/Finance rate 0%
 Only number formats are changed; values, formulas, colors, layout stay untouched.
 """
 import re
@@ -11,7 +12,7 @@ import openpyxl
 PRICE4 = '"$"#,##0.00##'          # min 2, max 4 decimals
 PRICE2 = '"$"#,##0.00'
 YY4 = '0.00##'
-LOSS_INT = '0.00'
+LOSS_INT = '0.00##'
 PCT0 = '0%'
 PCT2 = '0.00%'
 DATE = 'd-mmm'
@@ -119,7 +120,7 @@ def normalize_block(ws, r0, r1, log):
             cc = ws.cell(r, col)
             if isinstance(cc.value, (int, float)) and cc.value < 1:
                 cc.number_format = PCT0
-        ws.cell(r, cols['b_ttl']).number_format = PRICE2
+        ws.cell(r, cols['b_ttl']).number_format = PRICE4
 
     # others: rate 0.00%, amount 2 decimals
     if others:
@@ -128,11 +129,11 @@ def normalize_block(ws, r0, r1, log):
             cc = ws.cell(r, col)
             if isinstance(cc.value, (int, float)) and cc.value < 1:
                 cc.number_format = PCT2
-        ws.cell(r, cols['i_ttl']).number_format = PRICE2
+        ws.cell(r, cols['i_ttl']).number_format = PRICE4
 
     # net + final row (margin, internal total, FOB)
     if net:
-        ws.cell(net.row, cols['i_ttl']).number_format = PRICE2
+        ws.cell(net.row, cols['i_ttl']).number_format = PRICE4
         for r in range(net.row, min(net.row + 3, r1) + 1):
             fob = ws.cell(r, cols['b_ttl'])
             if isinstance(fob.value, str) and fob.value.upper().startswith('=SUM'):
@@ -142,7 +143,7 @@ def normalize_block(ws, r0, r1, log):
                 if 'b_remark' in cols:
                     q = ws.cell(r - 1, cols['b_remark'])
                     if isinstance(q.value, str) and q.value.upper().startswith('=SUM'):
-                        q.number_format = PRICE2   # profit+OH+finance sum
+                        q.number_format = PRICE4   # profit+OH+finance sum
                 break
     log.append(f'  ok block r{r0}-{r1}: cols={ {k: openpyxl.utils.get_column_letter(v) for k, v in cols.items()} }')
 
@@ -263,7 +264,6 @@ def normalize_bytes(data, all_sheets=False):
             ns = new_style(s, cells[ref])
             return _re.sub(r'\ss="\d+"', f' s="{ns}"', tag) if sm else tag.replace(f'r="{ref}"', f'r="{ref}" s="{ns}"')
         xml = _re.sub(r'<c r="([A-Z]+\d+)"[^>]*?>', rep, xml)
-        xml = _re.sub(r'<c r="([A-Z]+\d+)"[^>]*?/>', rep, xml)
         patched[path] = xml
     # write styles
     if added_xf:

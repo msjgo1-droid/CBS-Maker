@@ -1,19 +1,32 @@
-"""End-to-end: internal CBS (+ blank template / previous submission / MNMK) -> buyer CBS workbook."""
+"""End-to-end: internal CBS (+ blank template / previous submission / MNMK) -> buyer CBS + formatted internal."""
 import datetime as dt
 import io
 import os
 import re
+import zipfile
 
 import openpyxl
+from PIL import Image
 
-from internal import read_internal
-from cbs_fill import read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob, _norm, _s
+from internal import read_internal, gender_of
+from cbs_fill import (read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
+                      format_fob, _norm, _s)
+from cbs_format import normalize_bytes
 from panels import (is_panel_sheet, read_mnmk, pick_block, build_from_mnmk, recompute_marker,
-                    panel_yy, panel_codes)
-from xlutil import copy_sheet
+                    panel_yy, panel_codes, find_fields, one_pc_one_way)
+from xlimages import pictures, to_png
+from xlutil import copy_sheet, add_image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FACTORY = 'PIVNVN'
+
+
+def W(code, **kw):
+    return dict(code=code, **kw)
+
+
+def clean_name(n):
+    return re.sub(r'^[0-9a-f]{8}-', '', os.path.basename(n or ''))
 
 
 def variant_of(title):
@@ -26,10 +39,7 @@ def variant_of(title):
 
 
 def load(src):
-    """src: path or bytes."""
-    if isinstance(src, (bytes, bytearray)):
-        return openpyxl.load_workbook(io.BytesIO(src)), openpyxl.load_workbook(io.BytesIO(src), data_only=True)
-    return openpyxl.load_workbook(src), openpyxl.load_workbook(src, data_only=True)
+    return openpyxl.load_workbook(io.BytesIO(src) if isinstance(src, (bytes, bytearray)) else src)
 
 
 def default_block_map(info, main_titles):
@@ -50,8 +60,7 @@ def default_block_map(info, main_titles):
 def make_filename(ref_name, info, today=None):
     today = today or dt.date.today()
     d8 = today.strftime('%m%d%Y')
-    base = os.path.splitext(os.path.basename(ref_name or ''))[0]
-    base = re.sub(r'^[0-9a-f]{8}-', '', base)            # upload prefix
+    base = os.path.splitext(clean_name(ref_name))[0]
     parts = base.split('_')
     if len(parts) >= 4 and re.fullmatch(r'\d{8}', parts[-1]):
         parts[-1] = d8
@@ -60,36 +69,68 @@ def make_filename(ref_name, info, today=None):
     return f"{info.get('style') or 'STYLE'}_{info.get('gender') or ''}_NAME_SEASON_{FACTORY}_STAGE_{d8}.xlsx"
 
 
+# ---------------- sketch ----------------
+def sketch_candidates(internal_bytes, info):
+    """Pictures in columns A–C of the internal's first tab, topmost-in-active-block first."""
+    pics = [p for p in pictures(internal_bytes, 0) if p['col'] <= 2]
+    act = [b for b in info['blocks'] if b['idx'] in info['active']]
+    r0 = min((b['r0'] for b in act), default=1) - 2
+    r1 = max((b['r1'] for b in act), default=10 ** 6)
+    pics.sort(key=lambda p: (not (r0 <= p['row'] <= r1), p['row']))
+    return pics
+
+
+def place_sketch(ws, png):
+    """Put the garment sketch in the header, just left of the top 'FOB' label (rows 1-7)."""
+    label = None
+    for row in ws.iter_rows(max_row=9):
+        for c in row:
+            if _s(c.value).upper() == 'FOB' and c.column > 2:
+                label = c
+    if not label:
+        return False
+    for im in list(ws._images):                          # drop old header picture
+        a = im.anchor
+        if hasattr(a, '_from') and a._from.row < 8 and a._from.col >= 3:
+            ws._images.remove(im)
+    c0 = max(label.column - 4, 4)
+    from openpyxl.utils import get_column_letter as L
+    wpx = sum(int((ws.column_dimensions[L(c)].width or 8.43) * 7 + 5) for c in range(c0, label.column))
+    hpx = sum(int((ws.row_dimensions[r].height or 15) * 96 / 72) for r in range(1, 8)) - 6
+    im = Image.open(io.BytesIO(png))
+    k = min(wpx / im.width, hpx / im.height)
+    add_image(ws, png, f'{L(c0)}1', int(im.width * k), int(im.height * k))
+    return True
+
+
+# ---------------- main ----------------
 def generate(internal, internal_name, base=None, base_name='', prev=None, prev_name='', mnmk=None,
-             block_map=None, manual=None, crop=True, today=None):
-    rep = dict(warnings=[], sheets={}, panels=[], filename='')
-    info, wf, wv = read_internal(io.BytesIO(internal) if isinstance(internal, bytes) else internal, internal_name)
+             block_map=None, manual=None, crop=True, sketch=0, today=None):
+    rep = dict(warnings=[], sheets={}, panels=[], filename='', self_check=None)
+    info, wf, wv = read_internal(io.BytesIO(internal), clean_name(internal_name))
     rep['internal'] = info
     if not info['gender']:
-        from internal import gender_of
-        info['gender'] = gender_of(re.sub(r'^[0-9a-f]{8}-', '', prev_name or ''), re.sub(r'^[0-9a-f]{8}-', '', base_name or ''))
+        info['gender'] = gender_of(clean_name(prev_name), clean_name(base_name))
     if info['hidden']:
-        rep['warnings'].append('Internal hidden sheets: ' + ', '.join(info['hidden']))
+        rep['warnings'].append(W('hidden', src='Internal', names=', '.join(info['hidden'])))
+    for b in info['blocks']:
+        if b['idx'] in info['active'] and b['warn']:
+            rep['warnings'].append(W('block', block=b['idx'], text='; '.join(b['warn'])))
     wsv = wv.worksheets[0]
 
-    prev_wb = load(prev)[0] if prev else None
-    if base:
-        out, _ = load(base)
-    elif prev:
-        out, _ = load(prev)
-    else:
+    prev_wb = load(prev) if prev else None
+    if not (base or prev):
         raise ValueError('need blank template or previous submission')
-    import zipfile
+    out = load(base or prev)
     for raw, nm in ((base, 'Template'), (prev, 'Previous')):
         if raw:
-            z = zipfile.ZipFile(io.BytesIO(raw) if isinstance(raw, bytes) else raw)
+            z = zipfile.ZipFile(io.BytesIO(raw))
             if any(n.lower().endswith(('.wmf', '.emf')) for n in z.namelist()):
-                rep['warnings'].append(f'{nm}: WMF/EMF image found — it will be dropped in the output, re-insert manually')
-    for wb_, nm in ((out, 'Template'), (prev_wb, 'Previous')):
-        if wb_:
+                rep['warnings'].append(W('wmf', src=nm))
+            wb_ = load(raw)
             hid = [s.title for s in wb_.worksheets if s.sheet_state != 'visible']
             if hid:
-                rep['warnings'].append(f'{nm} hidden sheets: ' + ', '.join(hid))
+                rep['warnings'].append(W('hidden', src=nm, names=', '.join(hid)))
 
     # ---- main sheets (Solid/Heather duplication for CO) ----
     mains = [s for s in out.worksheets if is_main_sheet(s)]
@@ -101,23 +142,46 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             for k, t in enumerate(prev_mains[1:], 1):
                 copy_sheet(src, out, t, out.worksheets.index(src) + k)
             mains = [s for s in out.worksheets if is_main_sheet(s)]
-    titles = [s.title for s in mains]
-    bmap = dict(default_block_map(info, titles), **(block_map or {}))
+    bmap = dict(default_block_map(info, [s.title for s in mains]), **(block_map or {}))
+
+    # ---- sketch ----
+    cands = sketch_candidates(internal, info)
+    rep['sketches'] = [dict(row=p['row'] + 1, col=p['col'] + 1, ext=p['ext'], name=p['name']) for p in cands]
+    png = None
+    if cands:
+        sel = cands[min(sketch or 0, len(cands) - 1)]
+        png = to_png(sel['data'], sel['ext'])
+        rep['sketch_png'] = png
+        if not png:
+            rep['warnings'].append(W('sketch_conv', ext=sel['ext']))
+    else:
+        rep['warnings'].append(W('no_sketch'))
 
     # ---- fill ----
     for ws in mains:
         b = info['blocks'][bmap[ws.title]]
         blk = read_internal_block(wsv, b['r0'], b['r1'])
         res = fill_sheet(ws, blk, variant_of(ws.title), (manual or {}).get(ws.title))
+        format_fob(ws)
+        if png:
+            place_sketch(ws, png)
         res['block'] = b['idx']
         res['internal_fob'] = b['fob']
         res['fob'], res['material'] = calc_fob(ws)
         res['lines'] = [f"{l['cat']} / {l['detail']}" for l in blk['lines']]
         rep['sheets'][ws.title] = res
+        for l in res['log']:
+            if l['how'] == 'NO MATCH':
+                rep['warnings'].append(W('no_match', sheet=ws.title, row=l['row'], comp=l['component']))
+        for a in res['added']:
+            rep['warnings'].append(W('row_added', sheet=ws.title, row=a['row'], comp=a['component'], sec=a['section']))
+        if res['unplaced']:
+            rep['warnings'].append(W('not_placed', sheet=ws.title, items=', '.join(res['unplaced'])))
 
     # ---- panel sheets ----
+    mnmk_self = None
     if mnmk:
-        mwb = openpyxl.load_workbook(io.BytesIO(mnmk) if isinstance(mnmk, bytes) else mnmk, data_only=True)
+        mwb = openpyxl.load_workbook(io.BytesIO(mnmk), data_only=True)
         msheets, w = read_mnmk(mwb)
         rep['warnings'] += w
         layout = next((s for s in (prev_wb.worksheets if prev_wb else []) if is_panel_sheet(s)), None) \
@@ -128,22 +192,50 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
         for ms in msheets:
             blk, warn = pick_block(ms['blocks'], info['gender'])
             if warn:
-                rep['warnings'].append(f"[{ms['title']}] {warn}")
+                rep['warnings'].append(dict(warn, sheet=ms['title']))
             build_from_mnmk(out, layout, ms['title'], blk, crop=crop)
+            if mnmk_self is None and re.search(r'SELF|BODY', ms['title'].upper()):
+                mnmk_self = (ms['title'], blk['size'])
+        if mnmk_self is None and msheets:
+            b0, _ = pick_block(msheets[0]['blocks'], info['gender'])
+            mnmk_self = (msheets[0]['title'], b0['size'])
     elif prev_wb and base:
         for s in prev_wb.worksheets:
             if is_panel_sheet(s) and s.title not in out.sheetnames:
                 copy_sheet(s, out, s.title)
     rep['panels'] = sync_panels(out, mains, info, rep['warnings'])
+
+    # ---- Self must be 1pc / 1way (lengthwise) ----
+    if mnmk_self:
+        title, text = mnmk_self
+    else:
+        sp = self_panel(out, rep['panels'])
+        title, text = (sp.title, sp.cell(*find_fields(sp, 1, 12)['size']).value) if sp else (None, None)
+    ok = one_pc_one_way(text) if title else None
+    rep['self_check'] = dict(sheet=title, text=_s(text).replace('\n', ' '), ok=ok)
+    if ok is False:
+        rep['warnings'].insert(0, W('not_1pc', sheet=title, text=_s(text).replace('\n', ' ')))
+
     rep['filename'] = make_filename(prev_name or base_name, info, today)
     buf = io.BytesIO()
     out.save(buf)
     return buf.getvalue(), rep
 
 
+def self_panel(out, panels_rep):
+    sheets = [s for s in out.worksheets if is_panel_sheet(s)]
+    for s in sheets:
+        if re.search(r'SELF|BODY', s.title.upper()):
+            return s
+    for p in panels_rep:
+        if re.search(r'SELF|BODY', p['component'].upper()):
+            return out[p['panel']]
+    return sheets[0] if sheets else None
+
+
 def sync_panels(out, mains, info, warnings):
     """Match each panel sheet to a fabric row; back-calculate marker length from Net Usage."""
-    rows = []                                  # (main, row, component, material_codes, net)
+    rows = []
     for ws in mains:
         h, c = buyer_columns(ws)
         for r, comp, sec in buyer_rows(ws)[0]:
@@ -154,17 +246,16 @@ def sync_panels(out, mains, info, warnings):
             net = ws.cell(r, c['net']).value
             rows.append(dict(sheet=ws.title, row=r, comp=comp, codes=codes,
                              net=net if isinstance(net, (int, float)) else 0))
-    panels = [s for s in out.worksheets if is_panel_sheet(s)]
     groups = {}
-    for p in panels:
+    for p in [s for s in out.worksheets if is_panel_sheet(s)]:
         pc, pt = panel_codes(p), _norm(re.sub(r'\(.*?\)', '', p.title))
         nm = lambda r: _norm(re.sub(r'\(.*?\)', '', r['comp']))
         by_name = [r for r in rows if r['net'] and nm(r) and (nm(r) in pt or pt in nm(r))]
         by_code = [r for r in rows if r['codes'] & pc and r['net']]
         both = [r for r in by_code if r in by_name]
-        cand = both or (by_code if len({(r['comp'].lower()) for r in by_code}) == 1 else []) or by_name or by_code
+        cand = both or (by_code if len({r['comp'].lower() for r in by_code}) == 1 else []) or by_name or by_code
         if not cand:
-            warnings.append(f'[{p.title}] panel sheet: no fabric row matched → not recalculated')
+            warnings.append(W('panel_nomatch', sheet=p.title))
             continue
         key = (cand[0]['comp'].lower(), round(cand[0]['net'], 4))
         groups.setdefault(key, []).append((p, cand[0]))
@@ -184,3 +275,56 @@ def sync_panels(out, mains, info, warnings):
                             aux=[p.title for p in aux], aux_yy=round(aux_yy, 4), marker=y,
                             check=panel_yy(main)))
     return out_rep
+
+
+# ---------------- one style = formatted internal + buyer CBS ----------------
+def process_style(files, today=None, **opts):
+    """files: dict(internal=(name,bytes), base=..., prev=..., mnmk=...)."""
+    iname, idata = files['internal']
+    fmt_bytes, fmt_log = normalize_bytes(idata)
+    kw = dict(internal=idata, internal_name=iname, today=today, **opts)
+    for k in ('base', 'prev'):
+        if files.get(k):
+            kw[k], kw[k + '_name'] = files[k][1], files[k][0]
+    if files.get('mnmk'):
+        kw['mnmk'] = files['mnmk'][1]
+    data, rep = generate(**kw)
+    rep['internal_formatted'] = (clean_name(iname), fmt_bytes)
+    rep['format_log'] = fmt_log
+    return data, rep
+
+
+# ---------------- batch grouping ----------------
+def style_of(name, data=None):
+    m = re.search(r'(?<!\d)(\d{7})(?!\d)', clean_name(name))
+    if m:
+        return m.group(1)
+    if data:
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            ws = wb.worksheets[0]
+            for row in ws.iter_rows(max_row=12, max_col=6, values_only=True):
+                for v in row:
+                    m = re.search(r'(?<!\d)(\d{7})(?!\d)', _s(v))
+                    if m:
+                        return m.group(1)
+        except Exception:                                 # noqa
+            pass
+    return None
+
+
+def group_files(internals, bases, prevs, mnmks):
+    """Each arg: list of (name, bytes). Returns ({style: files}, unmatched_names)."""
+    groups, loose = {}, []
+    for role, lst in (('internal', internals), ('base', bases), ('prev', prevs), ('mnmk', mnmks)):
+        for name, data in lst:
+            st = style_of(name, data)
+            if not st:
+                loose.append((role, clean_name(name)))
+                continue
+            g = groups.setdefault(st, {})
+            if role in g:
+                loose.append((role + ' (duplicate)', clean_name(name)))
+                continue
+            g[role] = (name, data)
+    return groups, loose
