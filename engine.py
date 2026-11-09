@@ -205,6 +205,14 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             if is_panel_sheet(s) and s.title not in out.sheetnames:
                 copy_sheet(s, out, s.title)
     rep['panels'] = sync_panels(out, mains, info, rep['warnings'])
+    # fabric (marker) sheets: DATE = the day this CBS is made
+    run_day = today or dt.date.today()
+    for p in [s for s in out.worksheets if is_panel_sheet(s)]:
+        f = find_fields(p, 1, 12)
+        if 'date' in f:
+            cell = p.cell(*f['date'])
+            cell.value = dt.datetime(run_day.year, run_day.month, run_day.day)
+            cell.number_format = 'yyyy-mm-dd'
 
     # ---- Self (body) must be 1pc / 1way, laid LENGTHWISE — judged from the marker picture ----
     sp = self_panel(out, rep['panels'])
