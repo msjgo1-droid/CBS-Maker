@@ -37,8 +37,22 @@ def cat_key(cat):
 
 
 # ---------------- internal side ----------------
-def read_internal_block(ws, r0, r1):
-    """ws loaded with data_only=True."""
+SPLIT = re.compile(r'(\d*\.\d+|\d+)(?:\s*\+\s*(\d*\.\d+|\d+))+')
+
+
+def split_parts(*texts):
+    """'0.029+0.027' / '=1.2+0.995' -> [0.029, 0.027]; first text that holds a split wins."""
+    for t in texts:
+        m = SPLIT.search(_s(t))
+        if m:
+            nums = [float(x) for x in re.findall(r'\d*\.\d+|\d+', m.group(0))]
+            if len(nums) >= 2 and sum(nums) > 0:
+                return nums
+    return None
+
+
+def read_internal_block(ws, r0, r1, wsf=None):
+    """ws loaded with data_only=True; wsf = same sheet with formulas (to read '=a+b' YY)."""
     hdr = find_label(ws, r0, min(r0 + 5, r1), {'S/#'}).row
     cols = map_columns(ws, hdr)
     net = find_label(ws, hdr + 1, r1, {'NET'})
@@ -57,7 +71,13 @@ def read_internal_block(ws, r0, r1):
         price = _num(ws.cell(r, cols['b_price']).value)
         if price is None or not (e or d):
             continue
+        nxt = r + 1
+        below = [] if _num(ws.cell(nxt, cols['b_price']).value) is not None or _s(ws.cell(nxt, cols['i_item']).value) \
+            else [ws.cell(nxt, k).value for k in range(cols['i_item'], cols['i_remark'] + 1)]
+        parts = split_parts(wsf.cell(r, cols['i_yy']).value if wsf is not None and 'i_yy' in cols else None,
+                            e, ws.cell(r, cols['i_remark']).value, *below) if not after_cm else None
         lines.append(dict(row=r, cat=cat if after_cm else 'fabric', key=cat_key(cat) if after_cm else 'fabric',
+                          parts=parts,
                           item=d, detail=e, remark=_s(ws.cell(r, cols['i_remark']).value),
                           price=price,
                           yy=_num(ws.cell(r, cols['b_yy']).value) or 0,
@@ -215,7 +235,7 @@ def _set(ws, r, col, val, changes, sheet):
     c.value = val
 
 
-def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True):
+def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True, prev_splits=None):
     """variant: 'solid'/'heather'/None. manual: {buyer_row: internal_line_index or -1 (skip)}.
     Returns dict(log, changes, unplaced, added)."""
     manual = manual or {}
@@ -252,14 +272,38 @@ def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True):
                 _set(ws, r, c['loss'], 0, changes, ws.title)
                 log.append(dict(row=r, component=comp, match=f"{twin['item'] or twin['cat']} / {twin['detail']}",
                                 how='shared (0)', line=lines.index(twin)))
+                twin.setdefault('rows', []).append(r)
                 continue
             blank = not comp and not (_num(ws.cell(r, c['net']).value) or 0)
             log.append(dict(row=r, component=comp, match='', how='empty row' if blank else 'NO MATCH'))
             continue
         ln['used'] = True
+        ln['rows'] = [r]
         write_line(ws, r, c, ln, bp, changes)
         log.append(dict(row=r, component=comp, match=f"{ln['item'] or ln['cat']} / {ln['detail']}", how=how,
                         line=lines.index(ln)))
+    # one internal fabric line on several buyer rows (Shell 1 / Contrast 1 ...): split the usage
+    for ln in lines:
+        rows_ = ln.get('rows') or []
+        if len(rows_) < 2 or not ln['yy']:
+            continue
+        ratios, src = None, ''
+        if ln.get('parts') and len(ln['parts']) == len(rows_):
+            ratios, src = ln['parts'], 'internal ' + '+'.join(f'{x:g}' for x in ln['parts'])
+        elif prev_splits:
+            key = tuple(sorted(codes(material_text(ws, rows_[0], c))))
+            pv = prev_splits.get(key)
+            if pv and len(pv) == len(rows_):
+                ratios, src = pv, 'previous CBS ' + '+'.join(f'{x:g}' for x in pv)
+        if not ratios:
+            continue                                      # never split before -> all on the first row
+        tot = sum(ratios)
+        for rr, part in zip(rows_, ratios):
+            write_line(ws, rr, c, dict(ln, yy=ln['yy'] * part / tot), _num(ws.cell(rr, c['price']).value) or 0, changes)
+        for l in log:
+            if l['row'] in rows_:
+                l['how'] = 'split'
+                l['split'] = src
     # missing rows
     added = []
     unplaced = [l for l in lines if not l['used'] and l['yy'] and
@@ -401,3 +445,23 @@ def fob_cells(ws):
 def format_fob(ws):
     for c in fob_cells(ws):
         c.number_format = FOB_FMT
+
+
+def prev_split_map(wb):
+    """{material codes: [net per row]} for fabrics the previous CBS spread over 2+ rows."""
+    out = {}
+    for ws in wb.worksheets:
+        if not is_main_sheet(ws):
+            continue
+        h, c = buyer_columns(ws)
+        groups = {}
+        for r, comp, sec in buyer_rows(ws)[0]:
+            if sec not in FABRIC_SECTIONS:
+                continue
+            k = tuple(sorted(codes(material_text(ws, r, c))))
+            if k:
+                groups.setdefault(k, []).append(_num(ws.cell(r, c['net']).value) or 0)
+        for k, v in groups.items():
+            if len(v) >= 2 and sum(1 for x in v if x) >= 2 and k not in out:
+                out[k] = v
+    return out

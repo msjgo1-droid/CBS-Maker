@@ -22,6 +22,7 @@ streamlit run app.py
 - 바이어 template: Net Usage = internal 바이어쪽 yy, %Loss = LOSS−1, Price ≠ internal 단가면 Price Override,
   Freight Override = CIF, Labor = CM, OH/Profit/Transportation = SUM(Material:Labor) × 5%/5%/3%.
 - 항목 매칭: 자재코드 → 이름 → 단어 유사도 → 바이어 Price/Loss 숫자 비교. 화면에서 수동 수정 가능.
+- 같은 원단이 바이어 template 여러 행(Shell 1 / Contrast 1 등)에 있고 Internal은 1줄일 때: Internal YY/Detail/Remark(또는 바로 아래 줄)에 `a+b`가 있으면 그 비율로 나눔 → 없으면 이전 제출 CBS가 나눠져 있었을 때 그 비율 → 둘 다 없으면 첫 행에 전부, 나머지 0. 원단(마커) 시트는 합계 yy 기준.
 - template에 없는 항목은 해당 섹션 끝에 행 추가 (Interlining 제외).
 - Solid/Heather: 이전 제출본에 둘 다 있으면 둘 다 생성, 반대쪽 variant 행은 0.
 - 원단(마커) 시트: MNMK가 최신(날짜·폭·효율·Panel/Garment Q'ty·사이즈·사진), 마커 길이(Y/IN)는

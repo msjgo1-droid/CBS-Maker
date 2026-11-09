@@ -9,7 +9,7 @@ import openpyxl
 from PIL import Image
 
 from internal import read_internal, gender_of
-from cbs_fill import (FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
+from cbs_fill import (prev_split_map, FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
                       format_fob, _norm, _s)
 from cbs_format import normalize_bytes, set_cells, subtotal_plan
 from panels import (is_panel_sheet, read_mnmk, pick_block, build_from_mnmk, recompute_marker,
@@ -144,6 +144,7 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
                 copy_sheet(src, out, t, out.worksheets.index(src) + k)
             mains = [s for s in out.worksheets if is_main_sheet(s)]
     bmap = dict(default_block_map(info, [s.title for s in mains]), **(block_map or {}))
+    psplit = prev_split_map(prev_wb) if prev_wb else {}
 
     # ---- sketch ----
     cands = sketch_candidates(internal, info)
@@ -161,8 +162,8 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
     # ---- fill ----
     for ws in mains:
         b = info['blocks'][bmap[ws.title]]
-        blk = read_internal_block(wsv, b['r0'], b['r1'])
-        res = fill_sheet(ws, blk, variant_of(ws.title), (manual or {}).get(ws.title))
+        blk = read_internal_block(wsv, b['r0'], b['r1'], wf.worksheets[0])
+        res = fill_sheet(ws, blk, variant_of(ws.title), (manual or {}).get(ws.title), prev_splits=psplit)
         format_fob(ws)
         if png:
             place_sketch(ws, png)
@@ -172,6 +173,8 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
         res['lines'] = [f"{l['cat']} / {l['detail']}" for l in blk['lines']]
         rep['sheets'][ws.title] = res
         for l in res['log']:
+            if l['how'] == 'split':
+                rep['warnings'].append(W('split', sheet=ws.title, row=l['row'], comp=l['component'][:60], src=l['split']))
             if l['how'] == 'shared (0)':
                 rep['warnings'].append(W('shared', sheet=ws.title, row=l['row'], comp=l['component'][:60],
                                          match=l['match'][:60]))
@@ -257,8 +260,12 @@ def sync_panels(out, mains, info, warnings):
         if not cand:
             warnings.append(W('panel_nomatch', sheet=p.title))
             continue
-        key = (cand[0]['comp'].lower(), round(cand[0]['net'], 4))
-        groups.setdefault(key, []).append((p, cand[0]))
+        c0 = cand[0]
+        if c0['codes']:                    # fabric split over several rows (Shell 1 / Contrast 1): use the total
+            same = [r for r in rows if r['sheet'] == c0['sheet'] and r['codes'] == c0['codes']]
+            c0 = dict(c0, net=round(sum(r['net'] for r in same), 4))
+        key = (c0['comp'].lower(), round(c0['net'], 4))
+        groups.setdefault(key, []).append((p, c0))
     out_rep = []
     for key, items in groups.items():
         net = items[0][1]['net']
