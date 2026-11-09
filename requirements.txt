@@ -3,3 +3,4 @@ openpyxl>=3.1
 pandas
 numpy
 pillow
+scipy

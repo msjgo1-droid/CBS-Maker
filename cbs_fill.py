@@ -21,9 +21,10 @@ def _num(v):
 EXCLUDE_ADD = ('interlining',)           # never added as new rows (immaterial cost)
 
 # buyer section -> internal category key
-SECTION_KEY = {'body': 'fabric', 'lining - apparel': 'fabric', 'trims': 'trim',
-               'embellishments': 'emb', 'thread / stitching': 'thread', 'finishing': 'any',
-               'labels': 'label', 'packaging': 'pack'}
+SECTION_KEY = {'body': 'fabric', 'lining - apparel': 'fabric', 'lining': 'fabric', 'trims': 'trim',
+               'trim': 'trim', 'embellishments': 'emb', 'embellishment': 'emb', 'thread / stitching': 'thread',
+               'thread': 'thread', 'finishing': 'any', 'labels': 'label', 'packaging': 'pack'}
+FABRIC_SECTIONS = {k for k, v in SECTION_KEY.items() if v == 'fabric'}
 
 
 def cat_key(cat):
@@ -63,10 +64,10 @@ def read_internal_block(ws, r0, r1):
                           loss=_num(ws.cell(r, cols['b_loss']).value) or 1,
                           cif=_num(ws.cell(r, cols['b_cif']).value) if 'b_cif' in cols else None,
                           used=False))
+    from cbs_format import profit_labels
     rates = {}
-    for lbl, key in (('PROFITS', 'profit'), ('PROFIT', 'profit'), ('OH', 'oh'), ('FINANCE', 'finance')):
-        c = find_label(ws, hdr + 1, r1, {lbl})
-        if c and key not in rates:
+    for key, c in profit_labels(ws, hdr + 1, r1).items():
+        if c:
             for col in range(c.column + 1, cols['b_ttl']):
                 v = _num(ws.cell(c.row, col).value)
                 if v is not None and v < 1:
@@ -76,19 +77,37 @@ def read_internal_block(ws, r0, r1):
 
 
 # ---------------- buyer side ----------------
-HDR = {'component': 'Component', 'material': 'Material', 'supplier': 'Supplier', 'width': 'Cuttable Width',
-       'uom': 'UOM', 'net': 'Net Usage', 'loss': '% Loss', 'gross': 'Gross Usage', 'price': 'Price',
-       'override': 'Price Override', 'freight': 'Freight', 'freight_ovr': 'Freight Override',
-       'unit': 'Unit Price', 'comments': 'Costing Comments', 'placement': 'Placement'}
+HDR = {'component': 'component', 'material': 'material', 'legacy_name': 'legacymaterialname',
+       'legacy_id': 'legacymaterialid', 'category': 'costingcategory', 'supplier': 'supplier',
+       'width': 'cuttablewidth', 'uom': 'uom', 'net': 'netusage', 'loss': 'loss', 'gross': 'grossusage',
+       'price': 'price', 'override': 'priceoverride', 'freight': 'freight', 'freight_ovr': 'freightoverride',
+       'unit': 'unitprice', 'comments': 'costingcomments', 'placement': 'placement'}
+REQUIRED = ('component', 'material', 'net', 'loss', 'price', 'override', 'freight_ovr', 'unit')
+
+
+def _hkey(v):
+    return re.sub(r'[^a-z]', '', _s(v).lower())          # '% Loss' / '%Loss' -> 'loss'
 
 
 def buyer_columns(ws):
     for row in ws.iter_rows(max_row=25, max_col=1):
         if _s(row[0].value) == 'Component':
             h = row[0].row
-            m = {_s(c.value): c.column for c in ws[h] if c.value}
-            return h, {k: m.get(v) for k, v in HDR.items()}
+            m = {}
+            for c in ws[h]:
+                k = _hkey(c.value)
+                if k and k not in m:
+                    m[k] = c.column
+            cols = {k: m.get(v) for k, v in HDR.items()}
+            miss = [k for k in REQUIRED if not cols.get(k)]
+            if miss:
+                raise ValueError(f'[{ws.title}] buyer template columns not found: {miss}')
+            return h, cols
     raise ValueError(f'[{ws.title}] "Component" header not found')
+
+
+def material_text(ws, r, c):
+    return ' '.join(_s(ws.cell(r, c[k]).value) for k in ('material', 'legacy_name', 'legacy_id') if c.get(k))
 
 
 def is_main_sheet(ws):
@@ -109,11 +128,12 @@ def buyer_rows(ws):
         if al == 'lop':
             lop = r
             break
-        if al in SECTION_KEY:
-            sec = al
+        u = _s(ws.cell(r, c['unit']).value).upper()
+        if al in SECTION_KEY or (a and not material_text(ws, r, c).strip() and u.startswith('=SUM')):
+            sec = al if al in SECTION_KEY else al
             sections.append((r, al))
             continue
-        if not a and not _s(ws.cell(r, c['material']).value):
+        if not a and not material_text(ws, r, c).strip():
             continue
         rows.append((r, a, sec))
     return rows, sections, lop
@@ -146,11 +166,12 @@ def match_line(comp, material, buyer_price, buyer_loss, sec, lines, manual=None)
     for ln in free:                                    # 1) material code
         if (codes(ln['detail']) | codes(ln['remark'])) & mc:
             return ln, 'code'
+    comp = re.sub(r'^[A-Za-z /&-]+:\s*', '', comp)       # 'Packaging: Pin' -> 'Pin'
     nc = _norm(re.sub(r'\(.*?\)', '', comp))
     for ln in free:                                    # 2) component name
         for cand in (ln['detail'], ln['item']):
             n = _norm(cand)
-            if n and (n == nc or (len(nc) > 3 and (nc in n or n in nc))):
+            if n and (n == nc or (len(nc) > 3 and nc in n) or (len(n) > 3 and n in nc)):
                 return ln, 'name'
     cw = _words(comp)                                  # 3) word overlap (same section)
     best, score = None, 0
@@ -162,6 +183,17 @@ def match_line(comp, material, buyer_price, buyer_loss, sec, lines, manual=None)
             best, score = ln, sc
     if best and score >= 0.5:
         return best, f'fuzzy {score:.0%}'
+    mw = _words(material)                              # 3b) internal item name found in buyer material text
+    best, score = None, 0
+    for ln in free:
+        if not _same_sec(ln, sec):
+            continue
+        iw = _words(ln['detail'])
+        sc = len(iw & mw) / max(len(iw), 1)
+        if sc > score:
+            best, score = ln, sc
+    if best and score >= 0.6:
+        return best, f'material {score:.0%}'
     if buyer_price:                                    # 4) numbers: buyer price / loss (same section)
         cands = [l for l in free if _same_sec(l, sec) and abs(l['price'] - buyer_price) < 1e-6]
         if buyer_loss is not None and len(cands) > 1:
@@ -210,9 +242,19 @@ def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True):
         bp = _num(ws.cell(r, c['price']).value) or 0
         bl = _num(ws.cell(r, c['loss']).value)
         man = lines[manual[r]] if manual.get(r) is not None and manual[r] >= 0 else None
-        ln, how = match_line(comp, ws.cell(r, c['material']).value, bp, bl, sec, lines, man)
+        ln, how = match_line(comp, material_text(ws, r, c), bp, bl, sec, lines, man)
         if not ln:
-            log.append(dict(row=r, component=comp, match='', how='NO MATCH'))
+            mc = codes(material_text(ws, r, c))
+            twin = next((l for l in lines if l['used'] and (codes(l['detail']) | codes(l['remark'])) & mc), None)
+            if twin and mc:
+                # same fabric already put on another row (e.g. Shell 1 / Contrast 1): usage stays on the first row
+                _set(ws, r, c['net'], 0, changes, ws.title)
+                _set(ws, r, c['loss'], 0, changes, ws.title)
+                log.append(dict(row=r, component=comp, match=f"{twin['item'] or twin['cat']} / {twin['detail']}",
+                                how='shared (0)', line=lines.index(twin)))
+                continue
+            blank = not comp and not (_num(ws.cell(r, c['net']).value) or 0)
+            log.append(dict(row=r, component=comp, match='', how='empty row' if blank else 'NO MATCH'))
             continue
         ln['used'] = True
         write_line(ws, r, c, ln, bp, changes)

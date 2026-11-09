@@ -30,7 +30,9 @@ streamlit run app.py
 - 파일명: 이전 바이어 파일명 그대로, 공장코드 HJ → PIVNVN, 날짜 MMDDYYYY(작성일).
 - Internal 서식 정리: 최종가격(internal 합계·open FOB·상단 FOB)만 소수점 2자리, 나머지 숫자는 최대 4자리. XML 직접 수정이라 이미지(WMF 포함) 그대로 유지.
 - 바이어 CBS: 상단 FOB 왼쪽에 Internal 가먼트 스케치 삽입, FOB는 소수점 2자리, OH/Profit/Transportation 비율은 5%/5%/3%(오른쪽 정렬).
-- Self(body) 마커는 1pc / 1way(lengthwise) 원칙 — MNMK(또는 원단 시트) BASIC SIZE 문구에 "1PC 1 WAY"가 없으면 실행 시 맨 위에 빨간 경고.
+- Self(body) 마커는 1pc / 1way(lengthwise) 원칙 — 마커 사진에서 같은 색(=가먼트 1벌) 패널 묶음이 길이 방향으로 모였는지 판정, lengthwise 면적 75% 미만이면 실행 시 맨 위 빨간 경고 + 표시된 사진.
+- 정돈된 Internal: REMARK 칸에 단계(섹션)별 가격 합계(=SUM)가 없으면 추가 — 원단 / Special Trim / Embellishment / Thread / Labels / Packing / Profit·OH·Finance. 이미 있는 합계(여러 섹션을 묶은 것 포함)는 절대 건드리지 않음(Profit 수식이 참조하기 때문).
+- 정돈된 Internal: 사용된 블록의 open(바이어) FOB 오른쪽 칸에 "CBS 실행일 $바이어FOB" 기록 (예: CBS 11/9 $23.76).
 
 ## 알려진 제한
 - 바이어 template/이전 제출본에 WMF/EMF 이미지가 있으면 결과 파일에서 빠짐(경고 표시).

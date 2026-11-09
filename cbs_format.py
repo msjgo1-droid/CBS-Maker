@@ -64,6 +64,30 @@ def find_label(ws, r0, r1, labels, max_col=25):
     return None
 
 
+def find_contains(ws, r0, r1, word, max_col=25):
+    """First cell whose text contains `word` (e.g. 'Transportation +Finance' for FINANCE)."""
+    for row in ws.iter_rows(min_row=r0, max_row=r1, max_col=max_col):
+        for c in row:
+            if isinstance(c.value, str) and word in c.value.strip().upper() and len(c.value) < 40:
+                return c
+    return None
+
+
+def profit_labels(ws, r0, r1):
+    """{'profit': cell, 'oh': cell, 'finance': cell} — tolerant to label variants."""
+    out = {}
+    p = find_label(ws, r0, r1, {'PROFITS', 'PROFIT'})
+    if p:
+        out['profit'] = p
+    o = find_label(ws, r0, r1, {'OH', 'O/H', 'OVERHEAD'})
+    if o:
+        out['oh'] = o
+    f = find_contains(ws, r0, r1, 'FINANCE') or find_contains(ws, r0, r1, 'TRANSPORT')
+    if f:
+        out['finance'] = f
+    return out
+
+
 def normalize_block(ws, r0, r1, log):
     hdr = find_label(ws, r0, min(r0 + 5, r1), {'S/#'})
     if not hdr:
@@ -77,7 +101,7 @@ def normalize_block(ws, r0, r1, log):
         return
     net = find_label(ws, h + 1, r1, {'NET'})
     others = find_label(ws, h + 1, r1, {'OTHERS'})
-    pf = {lbl: find_label(ws, h + 1, r1, {lbl}) for lbl in ('PROFITS', 'PROFIT', 'OH', 'FINANCE')}
+    pf = profit_labels(ws, h + 1, r1)
     pf_rows = {c.row for c in pf.values() if c}
     last_item = (others.row - 1) if others else (net.row - 1 if net else r1)
     item_col = cols.get('i_item', 4)
@@ -291,3 +315,143 @@ def normalize_bytes(data, all_sheets=False):
             else:
                 zo.writestr(it, zin.read(it.filename))
     return out.getvalue(), log
+
+
+def set_text_cells(data, values, sheet_index=0):
+    return set_cells(data, {k: ('t', v, None) for k, v in values.items()}, sheet_index)
+
+
+def set_cells(data, values, sheet_index=0):
+    """Write cells by patching sheet XML (keeps everything else byte-for-byte).
+    values: {'Q84': ('t', 'CBS 11/9 $23.76', None), 'Q8': ('f', 'SUM(P4:P8)', 'Q15')}
+    third item = cell whose style to copy (None keeps the target's own style)."""
+    from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
+    zin = _zip.ZipFile(_io.BytesIO(data))
+    path = _sheet_paths(zin)[sheet_index]
+    xml = zin.read(path).decode('utf8')
+    def style_of(ref):
+        m = _re.search(rf'<c r="{ref}"(\s[^>]*?)?/?>', xml)
+        sm = _re.search(r'\ss="(\d+)"', m.group(0)) if m else None
+        return sm.group(1) if sm else None
+
+    for ref, (kind, text, style_ref) in values.items():
+        col, row = coordinate_from_string(ref)
+        if kind == 'f':
+            cell = f'<c r="{ref}"{{s}}><f>{_esc(text)}</f></c>'
+        else:
+            cell = f'<c r="{ref}"{{s}} t="inlineStr"><is><t xml:space="preserve">{_esc(text)}</t></is></c>'
+        st_ = style_of(style_ref) if style_ref else None
+        m = _re.search(rf'<c r="{ref}"(?:\s[^>]*?)?(?:/>|>.*?</c>)', xml, _re.S)
+        if m:
+            own = _re.search(r'\ss="(\d+)"', m.group(0)[:m.group(0).find('>') + 1])
+            st_ = st_ or (own.group(1) if own else None)
+            xml = xml[:m.start()] + cell.format(s=f' s="{st_}"' if st_ else '') + xml[m.end():]
+            continue
+        rm = _re.search(rf'<row r="{row}"[^>]*?(?:/>|>(.*?)</row>)', xml, _re.S)
+        if not rm:
+            continue                                    # row missing: skip quietly
+        new = cell.format(s=f' s="{st_}"' if st_ else '')
+        if rm.group(0).endswith('/>'):
+            xml = xml[:rm.start()] + rm.group(0)[:-2] + '>' + new + '</row>' + xml[rm.end():]
+            continue
+        body, ci = rm.group(1), column_index_from_string(col)
+        pos = len(body)
+        for cm in _re.finditer(r'<c r="([A-Z]+)\d+"', body):
+            if column_index_from_string(cm.group(1)) > ci:
+                pos = cm.start()
+                break
+        body = body[:pos] + new + body[pos:]
+        start = rm.start(1)
+        xml = xml[:start] + body + xml[rm.end(1):]
+    wbx = zin.read('xl/workbook.xml').decode('utf8')
+    if any(k == 'f' for k, _, _ in values.values()):          # make Excel recalculate new formulas
+        if '<calcPr' in wbx:
+            if 'fullCalcOnLoad' not in wbx:
+                wbx = wbx.replace('<calcPr', '<calcPr fullCalcOnLoad="1"', 1)
+        else:
+            wbx = wbx.replace('</workbook>', '<calcPr fullCalcOnLoad="1"/></workbook>')
+    out = _io.BytesIO()
+    with _zip.ZipFile(out, 'w', _zip.ZIP_DEFLATED) as zo:
+        for it in zin.infolist():
+            if it.filename == path:
+                zo.writestr(it, xml)
+            elif it.filename == 'xl/workbook.xml':
+                zo.writestr(it, wbx)
+            else:
+                zo.writestr(it, zin.read(it.filename))
+    return out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Section subtotals in the buyer REMARK column (one =SUM per cost section, like 1193712)
+# ---------------------------------------------------------------------------
+_CATS = ('TRIM', 'EMBELL', 'THREAD', 'STITCH', 'LABEL', 'LOGO', 'PACK', 'FINISH', 'WASH', 'PRINT')
+
+
+def _sections(ws, hdr, stop, cols):
+    """[(name, first_row, end_row, last_value_row)]: fabric block (rows before CM) + each cost category."""
+    ic, tc = cols['i_item'], cols['b_ttl']
+    has = lambda r: ws.cell(r, tc).value not in (None, '')
+    cm = next((r for r in range(hdr + 1, stop) if str(ws.cell(r, ic).value or '').strip().upper() == 'CM'), None)
+    secs = []
+    if cm and cm > hdr + 1:
+        vals = [r for r in range(hdr + 1, cm) if has(r)]
+        if vals:
+            secs.append(('Fabric', hdr + 1, cm - 1, vals[-1]))
+    labels = [r for r in range((cm or hdr) + 1, stop) if str(ws.cell(r, ic).value or '').strip()]
+    for i, r in enumerate(labels):
+        name = str(ws.cell(r, ic).value).strip()
+        end = (labels[i + 1] - 1) if i + 1 < len(labels) else stop - 1
+        if not any(k in name.upper() for k in _CATS):
+            continue
+        vals = [x for x in range(r, end + 1) if has(x)]
+        if vals:
+            secs.append((name, r, end, vals[-1]))
+    return secs
+
+
+def subtotal_plan(data, sheet_index=0):
+    """({ref: ('f', formula, style_ref)}, log) — adds only the section subtotals that are missing."""
+    from openpyxl.utils import get_column_letter as L
+    wb = openpyxl.load_workbook(_io.BytesIO(data))
+    ws = wb.worksheets[sheet_index]
+    plan, log = {}, []
+    for r0, r1 in find_blocks(ws):
+        h = find_label(ws, r0, min(r0 + 5, r1), {'S/#'})
+        if not h:
+            continue
+        cols = map_columns(ws, h.row)
+        if 'b_ttl' not in cols or 'i_item' not in cols:
+            continue
+        rc = cols.get('b_remark') or cols['b_ttl'] + 1
+        others = find_label(ws, h.row + 1, r1, {'OTHERS'})
+        net = find_label(ws, h.row + 1, r1, {'NET'})
+        stop = min(x.row for x in (others, net) if x) if (others or net) else r1
+        pf = sorted({c.row for c in profit_labels(ws, h.row + 1, r1).values()})
+        if pf:
+            stop = min(stop, pf[0])
+        tcol = L(cols['b_ttl'])
+        existing = {}
+        for r in range(h.row + 1, r1 + 1):
+            v = str(ws.cell(r, rc).value or '').replace('$', '').upper()
+            m = _re.match(r'^=SUM\(([A-Z]+)(\d+)(?::[A-Z]+(\d+))?\)$', v)
+            if m:
+                existing[r] = (int(m.group(2)), int(m.group(3) or m.group(2)))
+        style_ref = next((f'{L(rc)}{r}' for r in existing), None)
+        for name, a, b, last in _sections(ws, h.row, stop, cols):
+            first = next(x for x in range(a, b + 1) if ws.cell(x, cols['b_ttl']).value not in (None, ''))
+            if any(x <= first and y >= last for x, y in existing.values()):
+                continue          # already summed (even if one SUM covers several sections) -> never touch
+            spot = next((x for x in range(last, b + 1) if ws.cell(x, rc).value in (None, '')), None)
+            if spot is None:
+                log.append(f'  ! {name}: {L(rc)}{last} not empty, subtotal not added')
+                continue
+            ref = f'{L(rc)}{spot}'
+            plan[ref] = ('f', f'SUM({tcol}{a}:{tcol}{last})', style_ref or f'{tcol}{last}')
+            log.append(f'  + subtotal {name} r{a}-{last} -> {ref}')
+        if pf and not any(pf[0] <= r <= pf[-1] + 2 for r in existing) \
+                and ws.cell(pf[-1], rc).value in (None, ''):
+            ref = f'{L(rc)}{pf[-1]}'
+            plan[ref] = ('f', f'SUM({tcol}{pf[0]}:{tcol}{pf[-1]})', style_ref or f'{tcol}{pf[-1]}')
+            log.append(f'  + subtotal Profit/OH/Finance -> {ref}')
+    return plan, log

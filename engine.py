@@ -9,13 +9,14 @@ import openpyxl
 from PIL import Image
 
 from internal import read_internal, gender_of
-from cbs_fill import (read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
+from cbs_fill import (FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
                       format_fob, _norm, _s)
-from cbs_format import normalize_bytes
+from cbs_format import normalize_bytes, set_cells, subtotal_plan
 from panels import (is_panel_sheet, read_mnmk, pick_block, build_from_mnmk, recompute_marker,
                     panel_yy, panel_codes, find_fields, one_pc_one_way)
 from xlimages import pictures, to_png
-from xlutil import copy_sheet, add_image
+from orientation import judge
+from xlutil import copy_sheet, add_image, img_bytes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FACTORY = 'PIVNVN'
@@ -64,7 +65,7 @@ def make_filename(ref_name, info, today=None):
     parts = base.split('_')
     if len(parts) >= 4 and re.fullmatch(r'\d{8}', parts[-1]):
         parts[-1] = d8
-        parts = [FACTORY if re.fullmatch(r'P[IT][A-Z]*HJ|PTHJ', p) else p for p in parts]
+        parts = [re.sub(r'P[IT][A-Z]*HJ$', FACTORY, p) if re.search(r'P[IT][A-Z]*HJ$', p) else p for p in parts]
         return '_'.join(parts) + '.xlsx'
     return f"{info.get('style') or 'STYLE'}_{info.get('gender') or ''}_NAME_SEASON_{FACTORY}_STAGE_{d8}.xlsx"
 
@@ -171,6 +172,9 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
         res['lines'] = [f"{l['cat']} / {l['detail']}" for l in blk['lines']]
         rep['sheets'][ws.title] = res
         for l in res['log']:
+            if l['how'] == 'shared (0)':
+                rep['warnings'].append(W('shared', sheet=ws.title, row=l['row'], comp=l['component'][:60],
+                                         match=l['match'][:60]))
             if l['how'] == 'NO MATCH':
                 rep['warnings'].append(W('no_match', sheet=ws.title, row=l['row'], comp=l['component']))
         for a in res['added']:
@@ -179,7 +183,6 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             rep['warnings'].append(W('not_placed', sheet=ws.title, items=', '.join(res['unplaced'])))
 
     # ---- panel sheets ----
-    mnmk_self = None
     if mnmk:
         mwb = openpyxl.load_workbook(io.BytesIO(mnmk), data_only=True)
         msheets, w = read_mnmk(mwb)
@@ -194,29 +197,25 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             if warn:
                 rep['warnings'].append(dict(warn, sheet=ms['title']))
             build_from_mnmk(out, layout, ms['title'], blk, crop=crop)
-            if mnmk_self is None and re.search(r'SELF|BODY', ms['title'].upper()):
-                mnmk_self = (ms['title'], blk['size'])
-        if mnmk_self is None and msheets:
-            b0, _ = pick_block(msheets[0]['blocks'], info['gender'])
-            mnmk_self = (msheets[0]['title'], b0['size'])
     elif prev_wb and base:
         for s in prev_wb.worksheets:
             if is_panel_sheet(s) and s.title not in out.sheetnames:
                 copy_sheet(s, out, s.title)
     rep['panels'] = sync_panels(out, mains, info, rep['warnings'])
 
-    # ---- Self must be 1pc / 1way (lengthwise) ----
-    if mnmk_self:
-        title, text = mnmk_self
-    else:
-        sp = self_panel(out, rep['panels'])
-        title, text = (sp.title, sp.cell(*find_fields(sp, 1, 12)['size']).value) if sp else (None, None)
-    ok = one_pc_one_way(text) if title else None
-    rep['self_check'] = dict(sheet=title, text=_s(text).replace('\n', ' '), ok=ok)
-    if ok is False:
-        rep['warnings'].insert(0, W('not_1pc', sheet=title, text=_s(text).replace('\n', ' ')))
+    # ---- Self (body) must be 1pc / 1way, laid LENGTHWISE — judged from the marker picture ----
+    sp = self_panel(out, rep['panels'])
+    chk = dict(sheet=sp.title if sp else None, verdict='unknown', share=None, annotated=None)
+    if sp is not None and sp._images:
+        img = max(sp._images, key=lambda i: (i.width or 0) * (i.height or 0))
+        j = judge(img_bytes(img))
+        chk.update(verdict=j['verdict'], share=j['share'], annotated=j['annotated'])
+    rep['self_check'] = chk
+    if chk['verdict'] != 'lengthwise':
+        rep['warnings'].insert(0, W('not_1pc', sheet=chk['sheet'] or '-', verdict=chk['verdict'],
+                                    share=int((chk['share'] or 0) * 100)))
 
-    rep['filename'] = make_filename(prev_name or base_name, info, today)
+    rep['filename'] = make_filename(base_name or prev_name, info, today)
     buf = io.BytesIO()
     out.save(buf)
     return buf.getvalue(), rep
@@ -239,18 +238,19 @@ def sync_panels(out, mains, info, warnings):
     for ws in mains:
         h, c = buyer_columns(ws)
         for r, comp, sec in buyer_rows(ws)[0]:
-            if sec not in ('body', 'lining - apparel'):
+            if sec not in FABRIC_SECTIONS:
                 continue
-            mat = _s(ws.cell(r, c['material']).value).upper()
+            mat = material_text(ws, r, c).upper()
             codes = {t for t in re.split(r'[\s/,()#]+', mat) if len(t) >= 5 and re.search(r'\d', t)}
             net = ws.cell(r, c['net']).value
-            rows.append(dict(sheet=ws.title, row=r, comp=comp, codes=codes,
+            rows.append(dict(sheet=ws.title, row=r, comp=comp, codes=codes, mat=_norm(mat),
                              net=net if isinstance(net, (int, float)) else 0))
     groups = {}
     for p in [s for s in out.worksheets if is_panel_sheet(s)]:
         pc, pt = panel_codes(p), _norm(re.sub(r'\(.*?\)', '', p.title))
         nm = lambda r: _norm(re.sub(r'\(.*?\)', '', r['comp']))
-        by_name = [r for r in rows if r['net'] and nm(r) and (nm(r) in pt or pt in nm(r))]
+        by_name = [r for r in rows if r['net'] and nm(r) and (nm(r) in pt or pt in nm(r))] or \
+                  [r for r in rows if r['net'] and len(pt) > 4 and pt in r['mat']]
         by_code = [r for r in rows if r['codes'] & pc and r['net']]
         both = [r for r in by_code if r in by_name]
         cand = both or (by_code if len({r['comp'].lower() for r in by_code}) == 1 else []) or by_name or by_code
@@ -281,7 +281,6 @@ def sync_panels(out, mains, info, warnings):
 def process_style(files, today=None, **opts):
     """files: dict(internal=(name,bytes), base=..., prev=..., mnmk=...)."""
     iname, idata = files['internal']
-    fmt_bytes, fmt_log = normalize_bytes(idata)
     kw = dict(internal=idata, internal_name=iname, today=today, **opts)
     for k in ('base', 'prev'):
         if files.get(k):
@@ -289,6 +288,24 @@ def process_style(files, today=None, **opts):
     if files.get('mnmk'):
         kw['mnmk'] = files['mnmk'][1]
     data, rep = generate(**kw)
+    fmt_bytes, fmt_log = normalize_bytes(idata)
+    # record what went to the buyer: "CBS m/d $FOB" right of the open (buyer) FOB of each block used
+    d = today or dt.date.today()
+    notes = {}
+    for sh, r in rep['sheets'].items():
+        b = rep['internal']['blocks'][r['block']]
+        if b.get('fob_cell'):
+            from openpyxl.utils.cell import coordinate_from_string, column_index_from_string, get_column_letter
+            col, row = coordinate_from_string(b['fob_cell'])
+            ref = f'{get_column_letter(column_index_from_string(col) + 1)}{row}'
+            notes[ref] = f"CBS {d.month}/{d.day} ${r['fob']:.2f}"
+    plan, sub_log = subtotal_plan(idata)                   # section subtotals that are missing
+    cells = dict(plan)
+    cells.update({k: ('t', v, None) for k, v in notes.items()})
+    if cells:
+        fmt_bytes = set_cells(fmt_bytes, cells)
+    rep['cbs_notes'] = notes
+    rep['subtotals_added'] = sub_log
     rep['internal_formatted'] = (clean_name(iname), fmt_bytes)
     rep['format_log'] = fmt_log
     return data, rep

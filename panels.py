@@ -6,7 +6,7 @@ from copy import copy
 import numpy as np
 from PIL import Image
 
-from xlutil import copy_sheet, add_image
+from xlutil import copy_sheet, add_image, img_bytes
 
 LABELS = {'date': 'DATE', 'style': 'STYLE', 'fab': 'FAB DETAIL', 'size': 'BASIC SIZE', 'gqty': "GARMENT Q'TY",
           'width': 'CUTTABLE WIDTH', 'marker': 'TOTAL MARKER LENGTH', 'eff': 'EFFICIENCY',
@@ -150,7 +150,7 @@ def build_from_mnmk(dst_wb, layout_ws, title, block, index=None, crop=True):
     set_field(ws, f, 'marker', block['marker_in'], 2)
     # clear YY history values under the 'DATE / SAMPLE STAGE / YY' table
     if block['image'] is not None:
-        data = block['image']._data()
+        data = img_bytes(block['image'])
         if crop:
             data, _, size = crop_marker(data)
         else:

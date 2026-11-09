@@ -31,8 +31,20 @@ def copy_sheet(src, dst_wb, title=None, index=None):
     ws.sheet_view.zoomScale = src.sheet_view.zoomScale
     ws.sheet_properties.tabColor = src.sheet_properties.tabColor
     for im in src._images:
-        add_image(ws, im._data(), im.anchor, im.width, im.height)
+        add_image(ws, img_bytes(im), im.anchor, im.width, im.height)
     return ws
+
+
+def img_bytes(im):
+    """Image bytes without closing the underlying stream (openpyxl's _data() closes it)."""
+    ref = im.ref
+    if hasattr(ref, 'getvalue'):
+        return ref.getvalue()
+    if hasattr(ref, 'fp') and hasattr(ref.fp, 'getvalue'):
+        return ref.fp.getvalue()
+    data = im._data()
+    im.ref = io.BytesIO(data)
+    return data
 
 
 def add_image(ws, data, anchor, width=None, height=None):

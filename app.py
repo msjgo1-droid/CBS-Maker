@@ -49,6 +49,9 @@ T = {
     'fname': ('파일명', 'File name', 'Tên file'),
     'auto': ('(자동)', '(auto)', '(tự động)'),
     'skip': ('(빼기)', '(skip)', '(bỏ qua)'),
+    'legend': ('초록 L = 같은 색 패널이 가로(길이 방향)로 모임 · 빨강 W = 세로(폭 방향)로 쌓임 · 주황 M = 섞임',
+               'Green L = same-colour panels run along the length · Red W = stacked across the width · Orange M = mixed',
+               'Xanh L = cùng màu nằm theo chiều dài · Đỏ W = xếp theo chiều khổ · Cam M = lẫn lộn'),
     'self_bad': ('🚨 Self(body) MNMK가 1pc / 1way(lengthwise)가 아닌 스타일',
                  '🚨 Styles whose Self (body) marker is NOT 1pc / 1way (lengthwise)',
                  '🚨 Style có sơ đồ Self (thân) KHÔNG phải 1pc / 1way (theo chiều dọc)'),
@@ -57,12 +60,15 @@ T = {
     'col_fob': ('바이어 FOB', 'Buyer FOB', 'FOB buyer'), 'col_ifob': ('Internal FOB', 'Internal FOB', 'FOB nội bộ'),
     'col_self': ('Self 1pc/1way', 'Self 1pc/1way', 'Self 1pc/1way'), 'col_warn': ('경고', 'Warnings', 'Cảnh báo'),
 }
-t = lambda k: T[k][['KO', 'EN', 'VI'].index(lang)]
+LI = ['KO', 'EN', 'VI'].index(lang)
+t = lambda k: T[k][LI]
+VERD = {'lengthwise': ('lengthwise', 'lengthwise', 'chiều dọc'), 'widthwise': ('widthwise (세로 배치)', 'widthwise', 'chiều ngang'),
+        'mixed': ('섞여 있음 (random)', 'mixed / random', 'lẫn lộn'), 'unknown': ('판단 불가 (사진 없음)', 'cannot judge (no picture)', 'không xác định (không có ảnh)')}
 
 WARN = {
-    'not_1pc': ('Self(body) 마커가 1pc/1way가 아님 — [{sheet}] "{text}"',
-                'Self (body) marker is not 1pc/1way — [{sheet}] "{text}"',
-                'Sơ đồ Self (thân) không phải 1pc/1way — [{sheet}] "{text}"'),
+    'not_1pc': ('Self(body) 마커가 1pc/1way lengthwise가 아님 — [{sheet}] 판정: {verdict} (lengthwise 비율 {share}%)',
+                'Self (body) marker is not 1pc/1way lengthwise — [{sheet}] result: {verdict} (lengthwise share {share}%)',
+                'Sơ đồ Self (thân) không phải 1pc/1way theo chiều dọc — [{sheet}] kết quả: {verdict} (tỉ lệ chiều dọc {share}%)'),
     'hidden': ('{src} 숨김 시트: {names}', '{src} hidden sheets: {names}', 'Sheet ẩn trong {src}: {names}'),
     'wmf': ('{src}에 WMF/EMF 이미지가 있어 결과 파일에서 빠짐 — 직접 다시 넣어주세요',
             '{src} has WMF/EMF pictures — they are dropped in the output, re-insert manually',
@@ -77,6 +83,9 @@ WARN = {
     'no_match': ('[{sheet}] {row}행 "{comp}": Internal에 해당 항목 없음 (그대로 둠)',
                  '[{sheet}] row {row} "{comp}": no internal item (left as is)',
                  '[{sheet}] dòng {row} "{comp}": không có trong CBS nội bộ (giữ nguyên)'),
+    'shared': ('[{sheet}] {row}행 "{comp}": 같은 원단({match})이 위 행에 이미 들어가서 Net Usage 0으로 둠 — 나눠야 하면 직접 수정',
+               '[{sheet}] row {row} "{comp}": same fabric ({match}) already used on an earlier row — Net Usage set to 0, split manually if needed',
+               '[{sheet}] dòng {row} "{comp}": cùng vải ({match}) đã dùng ở dòng trên — Net Usage = 0, tự chia nếu cần'),
     'row_added': ('[{sheet}] {row}행 추가: {comp} ({sec})', '[{sheet}] row {row} added: {comp} ({sec})',
                   '[{sheet}] thêm dòng {row}: {comp} ({sec})'),
     'not_placed': ('[{sheet}] 넣지 못한 Internal 항목: {items}', '[{sheet}] internal items not placed: {items}',
@@ -154,10 +163,16 @@ if groups and st.button(t('run'), type='primary', use_container_width=True):
 
 if res:
     # ---------- 1pc / 1way alert first ----------
-    bad = [(s, r['rep']['self_check']) for s, r in res.items() if 'rep' in r and r['rep']['self_check']
-           and r['rep']['self_check']['ok'] is False]
+    bad = [(s, r['rep']['self_check']) for s, r in res.items() if 'rep' in r
+           and r['rep']['self_check']['verdict'] != 'lengthwise']
     if bad:
-        st.error(t('self_bad') + '\n\n' + '\n'.join(f"- **{s}** — [{c['sheet']}] {c['text']}" for s, c in bad))
+        st.error(t('self_bad') + '\n\n' + '\n'.join(
+            f"- **{s}** — [{c['sheet']}] {VERD[c['verdict']][LI]} ({int((c['share'] or 0) * 100)}%)" for s, c in bad))
+        cols = st.columns(min(len(bad), 3))
+        for i, (s, c) in enumerate(bad):
+            if c['annotated']:
+                cols[i % len(cols)].image(c['annotated'], caption=f"{s} · {c['sheet']}", use_container_width=True)
+        st.caption(t('legend'))
 
     st.subheader(t('summary'))
     srows = []
@@ -170,7 +185,7 @@ if res:
         srows.append({t('col_style'): s,
                       t('col_fob'): ' / '.join(f"{k}: ${v['fob']:.2f}" for k, v in rep['sheets'].items()),
                       t('col_ifob'): ' / '.join(f"${(v['internal_fob'] or 0):.2f}" for v in rep['sheets'].values()),
-                      t('col_self'): '—' if not sc or sc['ok'] is None else ('✅' if sc['ok'] else '🚨'),
+                      t('col_self'): '✅' if sc['verdict'] == 'lengthwise' else '🚨 ' + VERD[sc['verdict']][LI],
                       t('col_warn'): len(rep['warnings']), t('fname'): rep['filename']})
     st.dataframe(pd.DataFrame(srows), hide_index=True, use_container_width=True)
 
@@ -189,10 +204,14 @@ if res:
         if 'rep' not in r:
             continue
         rep = r['rep']
-        icon = '🚨' if rep['self_check'] and rep['self_check']['ok'] is False else ('⚠️' if rep['warnings'] else '✅')
+        icon = '🚨' if rep['self_check']['verdict'] != 'lengthwise' else ('⚠️' if rep['warnings'] else '✅')
         with st.expander(f"{icon} {s} — {rep['filename']}"):
             for w in rep['warnings']:
                 (st.error if w['code'] == 'not_1pc' else st.warning)(wtxt(w))
+            if rep['self_check']['annotated']:
+                st.image(rep['self_check']['annotated'], width=700,
+                         caption=f"Self · {rep['self_check']['sheet']} · {VERD[rep['self_check']['verdict']][LI]}")
+                st.caption(t('legend'))
             fname = st.text_input(t('fname'), rep['filename'], key=f'fn_{s}')
             d1, d2 = st.columns(2)
             d1.download_button(t('dl_buyer'), r['data'], file_name=fname, key=f'db_{s}')
