@@ -60,14 +60,27 @@ def mnmk_blocks(ws):
     return blocks
 
 
+def shrink_pct(v):
+    """'L : 5%  W : 5%' / '5%' / 0.05 -> 5.0 (largest number found)."""
+    if isinstance(v, (int, float)):
+        return v * 100 if v < 1 else v
+    nums = [float(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*%', _s(v))]
+    return max(nums) if nums else None
+
+
 def pick_block(blocks, gender):
+    """MNMK usually has a 3% and a 5% shrinkage marker -> always the 5% one; then costing size (M men / S women)."""
+    if not blocks:
+        return None, None
+    five = [b for b in blocks if shrink_pct(b['shrink']) == 5]
+    pool = five or blocks
     want = {'M': 'SIZE M', 'W': 'SIZE S'}.get(gender)
     if want:
-        for b in blocks:
+        for b in pool:
             if want in _s(b['size']).upper():
                 return b, None
-    b = blocks[-1] if blocks else None
-    return b, (dict(code='size_block', want=want) if want else None)
+    warn = dict(code='no_5pct') if not five else (dict(code='size_block', want=want) if want else None)
+    return pool[-1], warn
 
 
 def read_mnmk(wb_values):

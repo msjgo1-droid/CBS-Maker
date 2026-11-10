@@ -338,6 +338,8 @@ def set_cells(data, values, sheet_index=0):
         col, row = coordinate_from_string(ref)
         if kind == 'f':
             cell = f'<c r="{ref}"{{s}}><f>{_esc(text)}</f></c>'
+        elif kind == 'n':
+            cell = f'<c r="{ref}"{{s}}><v>{float(text)!r}</v></c>'
         else:
             cell = f'<c r="{ref}"{{s}} t="inlineStr"><is><t xml:space="preserve">{_esc(text)}</t></is></c>'
         st_ = style_of(style_ref) if style_ref else None
@@ -363,8 +365,12 @@ def set_cells(data, values, sheet_index=0):
         body = body[:pos] + new + body[pos:]
         start = rm.start(1)
         xml = xml[:start] + body + xml[rm.end(1):]
+    if any(k in ('f', 'n') for k, _, _ in values.values()):
+        # drop cached results of formulas so every app recalculates (values changed underneath them)
+        xml = _re.sub(r'(<f\b[^>]*?(?:/>|>.*?</f>))<v>[^<]*</v>', r'\1', xml, flags=_re.S)
+        xml = _re.sub(r'(<c\b[^>]*?)\st="(?:str|e|b)"([^>]*>\s*<f)', r'\1\2', xml)
     wbx = zin.read('xl/workbook.xml').decode('utf8')
-    if any(k == 'f' for k, _, _ in values.values()):          # make Excel recalculate new formulas
+    if any(k in ('f', 'n') for k, _, _ in values.values()):          # make Excel recalculate new formulas
         if '<calcPr' in wbx:
             if 'fullCalcOnLoad' not in wbx:
                 wbx = wbx.replace('<calcPr', '<calcPr fullCalcOnLoad="1"', 1)

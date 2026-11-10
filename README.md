@@ -38,3 +38,23 @@ streamlit run app.py
 ## 알려진 제한
 - 바이어 template/이전 제출본에 WMF/EMF 이미지가 있으면 결과 파일에서 빠짐(경고 표시).
 - 수동 매칭은 세션 동안만 기억.
+
+## 📊 FOB 기록 (시즌 · 단계별 가격 조회)
+- CBS 만들기 결과에서 **💾 이 결과를 FOB 기록에 저장** → 시즌 / 단계 / 스타일 / 컬러(SOLID·HEATHER) / FOB / 날짜 저장.
+  같은 시즌+단계+스타일+컬러는 최신 값으로 덮어씀.
+- **📊 FOB 기록** 탭: 예전에 바이어에게 나간 CBS 여러 개를 올려 한 번에 등록(파일명·시트에서 자동 추출, 표에서 수정 가능,
+  공란 template은 자동 제외) → 시즌·단계 선택 → 표 / 차트 / 엑셀 다운로드, 여러 단계·시즌 선택 시 열로 나란히 비교(Δ).
+
+### 저장소 설정 (Streamlit Cloud에서는 필수)
+Streamlit Cloud는 앱이 재시작되면 서버 파일이 지워져서, 기록은 **별도 private GitHub repo의 CSV**에 저장해요.
+1. GitHub에 빈 private repo 생성 (예: `hoka-cbs-data`) — 앱 repo와 다른 repo여야 저장할 때마다 앱이 재배포되지 않음.
+2. GitHub → Settings → Developer settings → Fine-grained token: 그 repo만, **Contents: Read and write**.
+3. Streamlit Cloud → 앱 → Settings → Secrets 에 입력:
+```
+[fob_store]
+github_token = "github_pat_..."
+github_repo  = "내아이디/hoka-cbs-data"
+path         = "fob_history.csv"
+branch       = "main"
+```
+설정이 없으면 서버 임시 폴더(data/fob_history.csv)에 저장되고 화면에 경고가 떠요 (내 PC에서 실행할 때는 그대로 사용 가능).

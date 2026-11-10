@@ -8,8 +8,8 @@ import zipfile
 import openpyxl
 from PIL import Image
 
-from internal import read_internal, gender_of
-from cbs_fill import (prev_split_map, FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
+from internal import read_internal, gender_of, previous_stage_block
+from cbs_fill import (price_drops, keep_previous, prev_split_map, FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
                       format_fob, _norm, _s)
 from cbs_format import normalize_bytes, set_cells, subtotal_plan
 from panels import (is_panel_sheet, read_mnmk, pick_block, build_from_mnmk, recompute_marker,
@@ -106,8 +106,8 @@ def place_sketch(ws, png):
 
 # ---------------- main ----------------
 def generate(internal, internal_name, base=None, base_name='', prev=None, prev_name='', mnmk=None,
-             block_map=None, manual=None, crop=True, sketch=0, today=None):
-    rep = dict(warnings=[], sheets={}, panels=[], filename='', self_check=None)
+             block_map=None, manual=None, crop=True, sketch=0, today=None, keep=None):
+    rep = dict(warnings=[], sheets={}, panels=[], filename='', self_check=None, drops={}, internal_edits={})
     info, wf, wv = read_internal(io.BytesIO(internal), clean_name(internal_name))
     rep['internal'] = info
     if not info['gender']:
@@ -163,6 +163,18 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
     for ws in mains:
         b = info['blocks'][bmap[ws.title]]
         blk = read_internal_block(wsv, b['r0'], b['r1'], wf.worksheets[0])
+        pv = previous_stage_block(wv, b['heather'])
+        if pv:
+            pblk = read_internal_block(wv.worksheets[pv[0]], pv[2], pv[3])
+            rows_ = price_drops(blk, pblk)
+            if b['fob'] is not None and pv[4] is not None and b['fob'] < pv[4] - 0.005:
+                rep['drops'][ws.title] = dict(prev_tab=pv[1], prev_fob=pv[4], cur_fob=b['fob'], rows=rows_,
+                                              block=b['idx'])
+                rep['warnings'].append(W('price_drop', sheet=ws.title, tab=pv[1], prev=f'{pv[4]:.2f}',
+                                         cur=f"{b['fob']:.2f}"))
+            k = (keep or {}).get(ws.title)
+            if k:
+                rep['internal_edits'].update(keep_previous(blk, pblk, k))
         res = fill_sheet(ws, blk, variant_of(ws.title), (manual or {}).get(ws.title), prev_splits=psplit)
         format_fob(ws)
         if png:
@@ -317,6 +329,7 @@ def process_style(files, today=None, **opts):
     plan, sub_log = subtotal_plan(idata)                   # section subtotals that are missing
     cells = dict(plan)
     cells.update({k: ('t', v, None) for k, v in notes.items()})
+    cells.update({k: ('n', v, None) for k, v in rep.get('internal_edits', {}).items()})
     if cells:
         fmt_bytes = set_cells(fmt_bytes, cells)
     rep['cbs_notes'] = notes

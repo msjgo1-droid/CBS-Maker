@@ -105,3 +105,32 @@ def read_internal(path, filename=''):
     act = [b for b in blocks if b['submitted']] or blocks[-1:]
     info['active'] = [b['idx'] for b in act]
     return info, wf, wv
+
+
+def previous_stage_block(wv, heather=False):
+    """(sheet_index, title, r0, r1, fob) of the previous stage = next tab to the right that has cost blocks."""
+    for si, ws in enumerate(wv.worksheets[1:], 1):
+        if ws.sheet_state != 'visible':
+            continue
+        bl = find_blocks(ws)
+        if not bl:
+            continue
+        cands = []
+        for r0, r1 in bl:
+            hdr = find_label(ws, r0, min(r0 + 5, r1), {'S/#'})
+            if not hdr:
+                continue
+            body = ' '.join(_s(ws.cell(r, c).value) for r in range(hdr.row + 1, r1) for c in (3, 5)).upper()
+            cols = map_columns(ws, hdr.row)
+            net = find_label(ws, hdr.row + 1, r1, {'NET'})
+            fob = None
+            if net and 'b_ttl' in cols:
+                for r in range(net.row, min(net.row + 3, r1) + 1):
+                    v = ws.cell(r, cols['b_ttl']).value
+                    if isinstance(v, (int, float)) and v > 1:
+                        fob = v
+            cands.append((('HEATHER' in body) == heather, si, ws.title, r0, r1, fob))
+        if cands:
+            best = sorted(cands, key=lambda x: (not x[0], -x[3]))[0]
+            return best[1:]
+    return None

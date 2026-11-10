@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from engine import process_style, group_files, clean_name
+import store as fstore
 
 st.set_page_config(page_title='HOKA CBS Builder', page_icon='🧾', layout='wide')
 
@@ -22,6 +23,25 @@ T = {
               '**a formatted internal CBS + a buyer CBS**.',
               'Tải tất cả file cùng lúc — hệ thống tự nhóm theo mã style (7 số) và mỗi style tạo ra '
               '**CBS nội bộ đã chuẩn hoá + CBS cho buyer**.'),
+    'tab_make': ('🧾 CBS 만들기', '🧾 Build CBS', '🧾 Tạo CBS'),
+    'tab_hist': ('📊 FOB 기록', '📊 FOB history', '📊 Lịch sử FOB'),
+    'save_hist': ('💾 이 결과를 FOB 기록에 저장', '💾 Save these results to FOB history', '💾 Lưu kết quả vào lịch sử FOB'),
+    'saved': ('저장 완료: 새로 {a}건, 갱신 {r}건', 'Saved: {a} new, {r} updated', 'Đã lưu: {a} mới, {r} cập nhật'),
+    'store_local': ('⚠️ 저장소가 설정되지 않아 서버 임시 폴더에 저장돼요 (Streamlit Cloud에서는 재시작 시 사라짐). README의 [fob_store] 설정을 해주세요.',
+                    '⚠️ No storage configured — saved to a temporary folder (lost when Streamlit Cloud restarts). Set [fob_store] in secrets (see README).',
+                    '⚠️ Chưa cấu hình lưu trữ — dữ liệu lưu tạm (mất khi Streamlit Cloud khởi động lại). Cài [fob_store] trong secrets (xem README).'),
+    'import': ('예전에 바이어에게 나간 CBS 올려서 기록에 추가', 'Add previously submitted buyer CBS files',
+               'Thêm các file CBS đã gửi buyer trước đây'),
+    'import_hint': ('파일명/시트에서 시즌·단계·스타일·컬러·FOB를 읽어요. 아래 표에서 고친 다음 저장하세요.',
+                    'Season / stage / style / colour / FOB are read from the file name and sheets. Fix them below, then save.',
+                    'Mùa / giai đoạn / style / màu / FOB đọc từ tên file và sheet. Sửa bên dưới rồi lưu.'),
+    'save': ('💾 저장', '💾 Save', '💾 Lưu'),
+    'f_season': ('시즌', 'Season', 'Mùa'), 'f_stage': ('단계', 'Stage', 'Giai đoạn'),
+    'f_style': ('스타일 검색', 'Style search', 'Tìm style'),
+    'compare': ('단계별 비교 (선택한 단계를 열로)', 'Compare stages (stages as columns)', 'So sánh giai đoạn (mỗi giai đoạn một cột)'),
+    'dl_xlsx': ('⬇️ 엑셀로 받기', '⬇️ Download Excel', '⬇️ Tải Excel'),
+    'empty': ('저장된 기록이 없어요.', 'No records yet.', 'Chưa có dữ liệu.'),
+    'chart': ('차트', 'Chart', 'Biểu đồ'),
     'up_int': ('① Internal CBS (필수, 여러 개 가능)', '① Internal CBS (required, multiple)',
                '① CBS nội bộ (bắt buộc, nhiều file)'),
     'up_base': ('② 바이어 공란 template', '② Buyer blank template', '② Template trống của buyer'),
@@ -43,6 +63,8 @@ T = {
     'blocks': ('Internal 블록 (시트별)', 'Internal block per sheet', 'Block nội bộ cho từng sheet'),
     'sketch': ('바이어 CBS 상단 스케치', 'Header sketch', 'Hình phác thảo ở đầu trang'),
     'match': ('항목 매칭 (수정 가능)', 'Item matching (editable)', 'Ghép hạng mục (có thể sửa)'),
+    'drop': ('📉 이전 단계보다 낮아진 항목 (체크 = 이전 값 유지)', '📉 Items lower than previous stage (tick = keep previous)',
+             '📉 Hạng mục thấp hơn giai đoạn trước (tích = giữ giá trị cũ)'),
     'apply': ('이 스타일 다시 만들기', 'Re-build this style', 'Tạo lại style này'),
     'panels': ('원단(마커) 시트', 'Fabric (marker) sheets', 'Sheet vải (sơ đồ)'),
     'changes': ('변경 내역', 'Changes', 'Thay đổi'),
@@ -85,6 +107,11 @@ WARN = {
                  '[{sheet}] dòng {row} "{comp}": không có trong CBS nội bộ (giữ nguyên)'),
     'split': ('[{sheet}] {row}행 "{comp}": 요척 나눠 넣음 ({src} 비율)', '[{sheet}] row {row} "{comp}": usage split by {src}',
               '[{sheet}] dòng {row} "{comp}": chia định mức theo {src}'),
+    'price_drop': ('[{sheet}] 바이어 open FOB가 이전 단계({tab}) ${prev} → ${cur}로 낮아짐 — 아래에서 원인 확인 후 이전 값 유지 선택 가능',
+                   '[{sheet}] open FOB dropped vs previous stage ({tab}) ${prev} → ${cur} — check the cause below and choose to keep previous values',
+                   '[{sheet}] Giá FOB open giảm so với giai đoạn trước ({tab}) ${prev} → ${cur} — xem nguyên nhân bên dưới, có thể giữ giá trị cũ'),
+    'no_5pct': ('[{sheet}] MNMK에 shrinkage 5% 마커가 없어 다른 블록 사용', '[{sheet}] no 5% shrinkage marker in MNMK — another block used',
+                '[{sheet}] MNMK không có sơ đồ co rút 5% — dùng block khác'),
     'shared': ('[{sheet}] {row}행 "{comp}": 같은 원단({match})이 위 행에 이미 들어감 — Internal에 (a+b) 나눔이 없고 이전 CBS도 안 나눠서 0으로 둠',
                '[{sheet}] row {row} "{comp}": same fabric ({match}) already used on an earlier row — Net Usage set to 0, split manually if needed',
                '[{sheet}] dòng {row} "{comp}": cùng vải ({match}) đã dùng ở dòng trên — Net Usage = 0, tự chia nếu cần'),
@@ -107,173 +134,291 @@ def wtxt(w):
         return str(w)
 
 
-st.title(t('title'))
-st.markdown(t('intro'))
-
-c1, c2 = st.columns(2)
-f_int = c1.file_uploader(t('up_int'), type=['xlsx'], accept_multiple_files=True, key='int')
-f_base = c1.file_uploader(t('up_base'), type=['xlsx'], accept_multiple_files=True, key='base')
-f_prev = c2.file_uploader(t('up_prev'), type=['xlsx'], accept_multiple_files=True, key='prev')
-f_mnmk = c2.file_uploader(t('up_mnmk'), type=['xlsx'], accept_multiple_files=True, key='mnmk')
-crop = st.sidebar.checkbox(t('crop'), value=True)
-
-pack = lambda fs: [(f.name, f.getvalue()) for f in (fs or [])]
-groups, loose = group_files(pack(f_int), pack(f_base), pack(f_prev), pack(f_mnmk))
-
-if groups:
-    st.subheader(t('styles'))
-    rows = []
-    for stl, g in sorted(groups.items()):
-        mode = ('CO + MNMK' if 'prev' in g and 'mnmk' in g else 'CO' if 'prev' in g else
-                'NEW + MNMK' if 'mnmk' in g else 'TEMPLATE')
-        rows.append({t('col_style'): stl, t('col_mode'): mode,
-                     'Internal': clean_name(g['internal'][0]) if 'internal' in g else '❌',
-                     'Template': clean_name(g['base'][0]) if 'base' in g else '',
-                     'Previous': clean_name(g['prev'][0]) if 'prev' in g else '',
-                     'MNMK': clean_name(g['mnmk'][0]) if 'mnmk' in g else ''})
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-if loose:
-    st.warning(t('loose') + ': ' + ', '.join(f'{n} ({r})' for r, n in loose))
-
-res = st.session_state.setdefault('results', {})
-opts = st.session_state.setdefault('opts', {})
-
-
-def run_one(stl, g):
-    if 'internal' not in g:
-        res[stl] = dict(error=t('no_int'))
-        return
-    if not ('base' in g or 'prev' in g):
-        res[stl] = dict(error=t('no_tpl'))
-        return
-    o = opts.get(stl, {})
+def _secrets():
     try:
-        data, rep = process_style(g, crop=crop, block_map=o.get('block_map'), manual=o.get('manual'),
-                                  sketch=o.get('sketch', 0))
-        res[stl] = dict(data=data, rep=rep, files=g)
-    except Exception as e:                               # noqa
-        res[stl] = dict(error=f'{type(e).__name__}: {e}')
+        return dict(st.secrets)
+    except Exception:                                        # noqa
+        return None
 
 
-if groups and st.button(t('run'), type='primary', use_container_width=True):
-    res.clear()
-    bar = st.progress(0.0)
-    for i, (stl, g) in enumerate(sorted(groups.items())):
-        bar.progress(i / len(groups), text=stl)
-        run_one(stl, g)
-    bar.progress(1.0, text='done')
+st.title(t('title'))
+tab_make, tab_hist = st.tabs([t('tab_make'), t('tab_hist')])
 
-if res:
-    # ---------- 1pc / 1way alert first ----------
-    bad = [(s, r['rep']['self_check']) for s, r in res.items() if 'rep' in r
-           and r['rep']['self_check']['verdict'] != 'lengthwise']
-    if bad:
-        st.error(t('self_bad') + '\n\n' + '\n'.join(
-            f"- **{s}** — [{c['sheet']}] {VERD[c['verdict']][LI]} ({int((c['share'] or 0) * 100)}%)" for s, c in bad))
-        cols = st.columns(min(len(bad), 3))
-        for i, (s, c) in enumerate(bad):
-            if c['annotated']:
-                cols[i % len(cols)].image(c['annotated'], caption=f"{s} · {c['sheet']}", use_container_width=True)
-        st.caption(t('legend'))
+with tab_make:
+    st.markdown(t('intro'))
+    c1, c2 = st.columns(2)
+    f_int = c1.file_uploader(t('up_int'), type=['xlsx'], accept_multiple_files=True, key='int')
+    f_base = c1.file_uploader(t('up_base'), type=['xlsx'], accept_multiple_files=True, key='base')
+    f_prev = c2.file_uploader(t('up_prev'), type=['xlsx'], accept_multiple_files=True, key='prev')
+    f_mnmk = c2.file_uploader(t('up_mnmk'), type=['xlsx'], accept_multiple_files=True, key='mnmk')
+    crop = st.sidebar.checkbox(t('crop'), value=True)
 
-    st.subheader(t('summary'))
-    srows = []
-    for s, r in sorted(res.items()):
-        if 'error' in r:
-            srows.append({t('col_style'): s, t('col_warn'): '❌ ' + r['error']})
-            continue
-        rep = r['rep']
-        sc = rep['self_check']
-        srows.append({t('col_style'): s,
-                      t('col_fob'): ' / '.join(f"{k}: ${v['fob']:.2f}" for k, v in rep['sheets'].items()),
-                      t('col_ifob'): ' / '.join(f"${(v['internal_fob'] or 0):.2f}" for v in rep['sheets'].values()),
-                      t('col_self'): '✅' if sc['verdict'] == 'lengthwise' else '🚨 ' + VERD[sc['verdict']][LI],
-                      t('col_warn'): len(rep['warnings']), t('fname'): rep['filename']})
-    st.dataframe(pd.DataFrame(srows), hide_index=True, use_container_width=True)
+    pack = lambda fs: [(f.name, f.getvalue()) for f in (fs or [])]
+    groups, loose = group_files(pack(f_int), pack(f_base), pack(f_prev), pack(f_mnmk))
 
-    zbuf = io.BytesIO()
-    with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as z:
-        for s, r in res.items():
-            if 'rep' in r:
-                z.writestr(f"{s}/{r['rep']['filename']}", r['data'])
-                n, d = r['rep']['internal_formatted']
-                z.writestr(f'{s}/{n}', d)
-    st.download_button(t('dl_all'), zbuf.getvalue(), file_name=f'HOKA_CBS_{dt.date.today():%m%d%Y}.zip',
-                       type='primary', use_container_width=True)
+    if groups:
+        st.subheader(t('styles'))
+        rows = []
+        for stl, g in sorted(groups.items()):
+            mode = ('CO + MNMK' if 'prev' in g and 'mnmk' in g else 'CO' if 'prev' in g else
+                    'NEW + MNMK' if 'mnmk' in g else 'TEMPLATE')
+            rows.append({t('col_style'): stl, t('col_mode'): mode,
+                         'Internal': clean_name(g['internal'][0]) if 'internal' in g else '❌',
+                         'Template': clean_name(g['base'][0]) if 'base' in g else '',
+                         'Previous': clean_name(g['prev'][0]) if 'prev' in g else '',
+                         'MNMK': clean_name(g['mnmk'][0]) if 'mnmk' in g else ''})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    if loose:
+        st.warning(t('loose') + ': ' + ', '.join(f'{n} ({r})' for r, n in loose))
 
-    # ---------- per style ----------
-    for s, r in sorted(res.items()):
-        if 'rep' not in r:
-            continue
-        rep = r['rep']
-        icon = '🚨' if rep['self_check']['verdict'] != 'lengthwise' else ('⚠️' if rep['warnings'] else '✅')
-        with st.expander(f"{icon} {s} — {rep['filename']}"):
-            for w in rep['warnings']:
-                (st.error if w['code'] == 'not_1pc' else st.warning)(wtxt(w))
-            if rep['self_check']['annotated']:
-                st.image(rep['self_check']['annotated'], width=700,
-                         caption=f"Self · {rep['self_check']['sheet']} · {VERD[rep['self_check']['verdict']][LI]}")
-                st.caption(t('legend'))
-            fname = st.text_input(t('fname'), rep['filename'], key=f'fn_{s}')
-            d1, d2 = st.columns(2)
-            d1.download_button(t('dl_buyer'), r['data'], file_name=fname, key=f'db_{s}')
-            n, d = rep['internal_formatted']
-            d2.download_button(t('dl_int'), d, file_name=n, key=f'di_{s}')
+    res = st.session_state.setdefault('results', {})
+    opts = st.session_state.setdefault('opts', {})
 
-            o = opts.setdefault(s, {})
-            # blocks
-            info = rep['internal']
-            st.markdown(f"**{t('blocks')}** · tab `{info['tab']}` · gender `{info['gender']}` · fit `{info['fit']}`")
-            bopts = [b['idx'] for b in info['blocks']]
-            bm = {}
-            cols = st.columns(max(len(rep['sheets']), 1))
-            for i, sh in enumerate(rep['sheets']):
-                cur = rep['sheets'][sh]['block']
-                bm[sh] = cols[i].selectbox(sh, bopts, index=bopts.index(cur), key=f'bl_{s}_{sh}',
-                                           format_func=lambda k, info=info: f"#{k} {info['blocks'][k]['stage_hdr'][:25]} "
-                                                                 f"${(info['blocks'][k]['fob'] or 0):.2f}"
-                                                                 f"{' ✅' if info['blocks'][k]['submitted'] else ''}")
-            # sketch
-            if rep.get('sketches'):
-                st.markdown(f"**{t('sketch')}**")
-                sk = st.radio(t('sketch'), list(range(len(rep['sketches']))), index=o.get('sketch', 0),
-                              horizontal=True, key=f'sk_{s}', label_visibility='collapsed',
-                              format_func=lambda k, rep=rep: f"#{k} r{rep['sketches'][k]['row']} {rep['sketches'][k]['name']}")
-                if rep.get('sketch_png'):
-                    st.image(rep['sketch_png'], width=260)
-            else:
-                sk = 0
-            # matching
-            st.markdown(f"**{t('match')}**")
-            man = {}
-            for sh, sr in rep['sheets'].items():
-                options = [t('auto'), t('skip')] + [f'{i}: {x}' for i, x in enumerate(sr['lines'])]
-                df = pd.DataFrame([dict(row=l['row'], component=l['component'], method=l['how'],
-                                        internal=f"{l['line']}: {sr['lines'][l['line']]}" if 'line' in l else '',
-                                        change=t('auto')) for l in sr['log']])
-                st.caption(sh)
-                ed = st.data_editor(df, key=f'ed_{s}_{sh}', hide_index=True, use_container_width=True,
-                                    disabled=['row', 'component', 'method', 'internal'],
-                                    column_config={'change': st.column_config.SelectboxColumn(options=options)})
-                m = {}
-                for _, x in ed.iterrows():
-                    if x['change'] == t('skip'):
-                        m[int(x['row'])] = -1
-                    elif x['change'] not in (t('auto'), None, ''):
-                        m[int(x['row'])] = int(str(x['change']).split(':')[0])
-                if m:
-                    man[sh] = m
-            if st.button(t('apply'), key=f'ap_{s}'):
-                o.update(block_map=bm, sketch=sk, manual=man or o.get('manual'))
-                run_one(s, r['files'])
-                st.rerun()
-            # panels
-            if rep['panels']:
-                st.markdown(f"**{t('panels')}**")
-                st.dataframe(pd.DataFrame([dict(sheet=p['panel'], component=p['component'], yy=p['net'],
-                                                aux=', '.join(p['aux']), marker=f"{p['marker'][0]} Y {p['marker'][1]} IN"
-                                                if p['marker'] else '', check=p['check']) for p in rep['panels']]),
-                             hide_index=True, use_container_width=True)
-            if st.toggle(t('changes'), key=f'ch_{s}'):
-                st.dataframe(pd.DataFrame([dict(c) for v in rep['sheets'].values() for c in v['changes']]),
-                             hide_index=True, use_container_width=True)
+
+    def run_one(stl, g):
+        if 'internal' not in g:
+            res[stl] = dict(error=t('no_int'))
+            return
+        if not ('base' in g or 'prev' in g):
+            res[stl] = dict(error=t('no_tpl'))
+            return
+        o = opts.get(stl, {})
+        try:
+            data, rep = process_style(g, crop=crop, block_map=o.get('block_map'), manual=o.get('manual'),
+                                      sketch=o.get('sketch', 0), keep=o.get('keep'))
+            res[stl] = dict(data=data, rep=rep, files=g)
+        except Exception as e:                               # noqa
+            res[stl] = dict(error=f'{type(e).__name__}: {e}')
+
+
+    if groups and st.button(t('run'), type='primary', use_container_width=True):
+        res.clear()
+        bar = st.progress(0.0)
+        for i, (stl, g) in enumerate(sorted(groups.items())):
+            bar.progress(i / len(groups), text=stl)
+            run_one(stl, g)
+        bar.progress(1.0, text='done')
+
+    if res:
+        # ---------- 1pc / 1way alert first ----------
+        bad = [(s, r['rep']['self_check']) for s, r in res.items() if 'rep' in r
+               and r['rep']['self_check']['verdict'] != 'lengthwise']
+        if bad:
+            st.error(t('self_bad') + '\n\n' + '\n'.join(
+                f"- **{s}** — [{c['sheet']}] {VERD[c['verdict']][LI]} ({int((c['share'] or 0) * 100)}%)" for s, c in bad))
+            cols = st.columns(min(len(bad), 3))
+            for i, (s, c) in enumerate(bad):
+                if c['annotated']:
+                    cols[i % len(cols)].image(c['annotated'], caption=f"{s} · {c['sheet']}", use_container_width=True)
+            st.caption(t('legend'))
+
+        st.subheader(t('summary'))
+        srows = []
+        for s, r in sorted(res.items()):
+            if 'error' in r:
+                srows.append({t('col_style'): s, t('col_warn'): '❌ ' + r['error']})
+                continue
+            rep = r['rep']
+            sc = rep['self_check']
+            srows.append({t('col_style'): s,
+                          t('col_fob'): ' / '.join(f"{k}: ${v['fob']:.2f}" for k, v in rep['sheets'].items()),
+                          t('col_ifob'): ' / '.join(f"${(v['internal_fob'] or 0):.2f}" for v in rep['sheets'].values()),
+                          t('col_self'): '✅' if sc['verdict'] == 'lengthwise' else '🚨 ' + VERD[sc['verdict']][LI],
+                          '📉': '📉' if rep.get('drops') else '',
+                          t('col_warn'): len(rep['warnings']), t('fname'): rep['filename']})
+        st.dataframe(pd.DataFrame(srows), hide_index=True, use_container_width=True)
+
+        zbuf = io.BytesIO()
+        with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as z:
+            for s, r in res.items():
+                if 'rep' in r:
+                    z.writestr(f"{s}/{r['rep']['filename']}", r['data'])
+                    n, d = r['rep']['internal_formatted']
+                    z.writestr(f'{s}/{n}', d)
+        st.download_button(t('dl_all'), zbuf.getvalue(), file_name=f'HOKA_CBS_{dt.date.today():%m%d%Y}.zip',
+                           type='primary', use_container_width=True)
+        if st.button(t('save_hist'), use_container_width=True):
+            recs = []
+            for s_, r_ in res.items():
+                if 'rep' in r_:
+                    fn = st.session_state.get(f'fn_{s_}') or r_['rep']['filename']
+                    recs += fstore.records_from_buyer_file(fn, r_['data'],
+                                                           {k: v['fob'] for k, v in r_['rep']['sheets'].items()})
+            if recs:
+                stor = fstore.Store(_secrets())
+                a, rp = stor.upsert(recs)
+                st.success(t('saved').format(a=a, r=rp))
+                if stor.kind == 'local':
+                    st.warning(t('store_local'))
+
+        # ---------- per style ----------
+        for s, r in sorted(res.items()):
+            if 'rep' not in r:
+                continue
+            rep = r['rep']
+            icon = '🚨' if rep['self_check']['verdict'] != 'lengthwise' else ('⚠️' if rep['warnings'] else '✅')
+            with st.expander(f"{icon} {s} — {rep['filename']}"):
+                for w in rep['warnings']:
+                    (st.error if w['code'] == 'not_1pc' else st.warning)(wtxt(w))
+                if rep['self_check']['annotated']:
+                    st.image(rep['self_check']['annotated'], width=700,
+                             caption=f"Self · {rep['self_check']['sheet']} · {VERD[rep['self_check']['verdict']][LI]}")
+                    st.caption(t('legend'))
+                fname = st.text_input(t('fname'), rep['filename'], key=f'fn_{s}')
+                d1, d2 = st.columns(2)
+                d1.download_button(t('dl_buyer'), r['data'], file_name=fname, key=f'db_{s}')
+                n, d = rep['internal_formatted']
+                d2.download_button(t('dl_int'), d, file_name=n, key=f'di_{s}')
+
+                o = opts.setdefault(s, {})
+                # blocks
+                info = rep['internal']
+                st.markdown(f"**{t('blocks')}** · tab `{info['tab']}` · gender `{info['gender']}` · fit `{info['fit']}`")
+                bopts = [b['idx'] for b in info['blocks']]
+                bm = {}
+                cols = st.columns(max(len(rep['sheets']), 1))
+                for i, sh in enumerate(rep['sheets']):
+                    cur = rep['sheets'][sh]['block']
+                    bm[sh] = cols[i].selectbox(sh, bopts, index=bopts.index(cur), key=f'bl_{s}_{sh}',
+                                               format_func=lambda k, info=info: f"#{k} {info['blocks'][k]['stage_hdr'][:25]} "
+                                                                     f"${(info['blocks'][k]['fob'] or 0):.2f}"
+                                                                     f"{' ✅' if info['blocks'][k]['submitted'] else ''}")
+                # sketch
+                if rep.get('sketches'):
+                    st.markdown(f"**{t('sketch')}**")
+                    sk = st.radio(t('sketch'), list(range(len(rep['sketches']))), index=o.get('sketch', 0),
+                                  horizontal=True, key=f'sk_{s}', label_visibility='collapsed',
+                                  format_func=lambda k, rep=rep: f"#{k} r{rep['sketches'][k]['row']} {rep['sketches'][k]['name']}")
+                    if rep.get('sketch_png'):
+                        st.image(rep['sketch_png'], width=260)
+                else:
+                    sk = 0
+                # open price drop vs previous stage
+                keep = {}
+                for sh, dr in rep.get('drops', {}).items():
+                    st.markdown(f"**{t('drop')}** · [{sh}] `{dr['prev_tab']}` ${dr['prev_fob']:.2f} → ${dr['cur_fob']:.2f}")
+                    cur_keep = (o.get('keep') or {}).get(sh, {})
+                    rows = []
+                    for x in dr['rows']:
+                        k = x['line']
+                        rows.append(dict(line=str(k), item=x['item'], detail=x['detail'][:40], reason=', '.join(x['why']),
+                                         previous=', '.join(f"{a}={v:g}" for a, v in x['prev'].items() if v is not None),
+                                         now=', '.join(f"{a}={v:g}" for a, v in x['cur'].items() if v is not None),
+                                         delta=x['delta'],
+                                         keep_yy='yy' in cur_keep.get(k, []), keep_price='price' in cur_keep.get(k, []),
+                                         keep_loss='loss' in cur_keep.get(k, []), keep_cif='cif' in cur_keep.get(k, []),
+                                         keep_cm='cm' in cur_keep.get(k, [])))
+                    if not rows:
+                        continue
+                    ed = st.data_editor(pd.DataFrame(rows), key=f'dr_{s}_{sh}', hide_index=True, use_container_width=True,
+                                        disabled=['line', 'item', 'detail', 'reason', 'previous', 'now', 'delta'])
+                    kk = {}
+                    for _, x in ed.iterrows():
+                        f = [a for a in ('yy', 'price', 'loss', 'cif', 'cm') if x[f'keep_{a}']]
+                        if f:
+                            kk['CM' if x['line'] == 'CM' else int(x['line'])] = f
+                    if kk:
+                        keep[sh] = kk
+                # matching
+                st.markdown(f"**{t('match')}**")
+                man = {}
+                for sh, sr in rep['sheets'].items():
+                    options = [t('auto'), t('skip')] + [f'{i}: {x}' for i, x in enumerate(sr['lines'])]
+                    df = pd.DataFrame([dict(row=l['row'], component=l['component'], method=l['how'],
+                                            internal=f"{l['line']}: {sr['lines'][l['line']]}" if 'line' in l else '',
+                                            change=t('auto')) for l in sr['log']])
+                    st.caption(sh)
+                    ed = st.data_editor(df, key=f'ed_{s}_{sh}', hide_index=True, use_container_width=True,
+                                        disabled=['row', 'component', 'method', 'internal'],
+                                        column_config={'change': st.column_config.SelectboxColumn(options=options)})
+                    m = {}
+                    for _, x in ed.iterrows():
+                        if x['change'] == t('skip'):
+                            m[int(x['row'])] = -1
+                        elif x['change'] not in (t('auto'), None, ''):
+                            m[int(x['row'])] = int(str(x['change']).split(':')[0])
+                    if m:
+                        man[sh] = m
+                if st.button(t('apply'), key=f'ap_{s}'):
+                    o.update(block_map=bm, sketch=sk, manual=man or o.get('manual'), keep=keep)
+                    run_one(s, r['files'])
+                    st.rerun()
+                # panels
+                if rep['panels']:
+                    st.markdown(f"**{t('panels')}**")
+                    st.dataframe(pd.DataFrame([dict(sheet=p['panel'], component=p['component'], yy=p['net'],
+                                                    aux=', '.join(p['aux']), marker=f"{p['marker'][0]} Y {p['marker'][1]} IN"
+                                                    if p['marker'] else '', check=p['check']) for p in rep['panels']]),
+                                 hide_index=True, use_container_width=True)
+                if st.toggle(t('changes'), key=f'ch_{s}'):
+                    st.dataframe(pd.DataFrame([dict(c) for v in rep['sheets'].values() for c in v['changes']]),
+                                 hide_index=True, use_container_width=True)
+
+
+# ======================= FOB HISTORY =======================
+with tab_hist:
+    stor = fstore.Store(_secrets())
+    if stor.kind == 'local':
+        st.info(t('store_local'))
+    try:
+        hist = stor.load()
+    except Exception as e:                                   # noqa
+        st.error(f'{type(e).__name__}: {e}')
+        hist = pd.DataFrame(columns=fstore.COLS)
+
+    # ---- import old buyer CBS ----
+    with st.expander(t('import'), expanded=hist.empty):
+        st.caption(t('import_hint'))
+        old = st.file_uploader(t('import'), type=['xlsx'], accept_multiple_files=True, key='hist_up',
+                               label_visibility='collapsed')
+        if old:
+            recs, bad = [], []
+            for f in old:
+                try:
+                    recs += fstore.records_from_buyer_file(f.name, f.getvalue())
+                except Exception as e:                       # noqa
+                    bad.append(f'{f.name}: {e}')
+            for b in bad:
+                st.warning(b)
+            if recs:
+                ed = st.data_editor(pd.DataFrame(recs), key='hist_ed', hide_index=True, use_container_width=True,
+                                    num_rows='dynamic',
+                                    column_config={'fob': st.column_config.NumberColumn(format='$%.2f'),
+                                                   'color': st.column_config.SelectboxColumn(options=['SOLID', 'HEATHER'])})
+                if st.button(t('save'), type='primary'):
+                    a, rp = stor.upsert(ed.to_dict('records'))
+                    st.success(t('saved').format(a=a, r=rp))
+                    st.rerun()
+
+    if hist.empty:
+        st.info(t('empty'))
+    else:
+        c1, c2, c3 = st.columns([1, 1, 1])
+        seasons = sorted(hist['season'].dropna().unique(), reverse=True)
+        sel_s = c1.multiselect(t('f_season'), seasons, default=seasons[:1])
+        stages = sorted(hist[hist['season'].isin(sel_s)]['stage'].dropna().unique()) if sel_s else []
+        sel_g = c2.multiselect(t('f_stage'), stages, default=stages[-1:] if stages else [])
+        q = c3.text_input(t('f_style'))
+        view = hist[hist['season'].isin(sel_s) & hist['stage'].isin(sel_g)]
+        if q:
+            view = view[view['style'].str.contains(q.strip())]
+        view = fstore.sort_table(view)
+        cmp_ = st.toggle(t('compare'), value=len(sel_g) > 1 or len(sel_s) > 1)
+        if cmp_ and (len(sel_g) > 1 or len(sel_s) > 1):
+            vv = view.assign(step=view['season'] + ' ' + view['stage'])
+            piv = vv.pivot_table(index=['style', 'color'], columns='step', values='fob', aggfunc='last')
+            piv = piv[sorted(piv.columns, key=lambda x: (x[1:3], x[0] != 'S', x[4:]))]
+            if len(piv.columns) >= 2:
+                piv['Δ'] = piv.iloc[:, -1] - piv.iloc[:, 0]
+            st.dataframe(piv.style.format('${:.2f}', na_rep=''), use_container_width=True)
+        else:
+            show = view[['season', 'stage', 'style', 'color', 'fob', 'date']].rename(columns={
+                'season': 'SEASON', 'stage': 'STAGE', 'style': 'STYLE#', 'color': 'COLOR', 'fob': 'FOB (USD)', 'date': 'DATE'})
+            st.dataframe(show, hide_index=True, use_container_width=True,
+                         column_config={'FOB (USD)': st.column_config.NumberColumn(format='$%.2f')})
+        if not view.empty:
+            st.markdown(f"**{t('chart')}**")
+            ch = view.assign(label=view['style'] + ' ' + view['color'].str[:1], step=view['season'] + ' ' + view['stage'])
+            st.bar_chart(ch.pivot_table(index='label', columns='step', values='fob', aggfunc='last'), stack=False)
+            st.download_button(t('dl_xlsx'), fstore.report_xlsx(view),
+                               file_name=f"HOKA_FOB_{'_'.join(sel_s)}_{'_'.join(sel_g)}.xlsx")

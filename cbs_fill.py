@@ -58,12 +58,13 @@ def read_internal_block(ws, r0, r1, wsf=None):
     net = find_label(ws, hdr + 1, r1, {'NET'})
     others = find_label(ws, hdr + 1, r1, {'OTHERS'})
     stop = min(x.row for x in (net, others) if x)
-    lines, cat, cm, after_cm = [], 'fabric', None, False
+    lines, cat, cm, after_cm, cm_row = [], 'fabric', None, False, None
     for r in range(hdr + 1, stop):
         d = _s(ws.cell(r, cols['i_item']).value)
         e = _s(ws.cell(r, cols['i_detail']).value)
         if _norm(d) == 'cm':
             cm = _num(ws.cell(r, cols['b_ttl']).value)
+            cm_row = r
             after_cm = True
             continue
         if d and after_cm:
@@ -93,7 +94,7 @@ def read_internal_block(ws, r0, r1, wsf=None):
                 if v is not None and v < 1:
                     rates[key] = v
                     break
-    return dict(lines=lines, cm=cm, rates=rates)
+    return dict(lines=lines, cm=cm, rates=rates, cols=cols, cm_row=cm_row)
 
 
 # ---------------- buyer side ----------------
@@ -465,3 +466,71 @@ def prev_split_map(wb):
             if len(v) >= 2 and sum(1 for x in v if x) >= 2 and k not in out:
                 out[k] = v
     return out
+
+
+# ---------------- open price drop vs previous stage ----------------
+def _line_key(l):
+    return codes(l['detail']) | codes(l['remark'])
+
+
+def match_prev_lines(cur, prev):
+    """{cur_index: prev_index} by material code, then item/detail name."""
+    out, used = {}, set()
+    for i, l in enumerate(cur):
+        k = _line_key(l)
+        j = next((j for j, p in enumerate(prev) if j not in used and k and k & _line_key(p)), None)
+        if j is None:
+            n = _norm(l['detail']) or _norm(l['item'])
+            j = next((j for j, p in enumerate(prev) if j not in used and n and n in (_norm(p['detail']), _norm(p['item']))), None)
+        if j is not None:
+            out[i] = j
+            used.add(j)
+    return out
+
+
+def open_cost(l):
+    return (l['yy'] or 0) * (l['loss'] or 1) * ((l['price'] or 0) + (l['cif'] or 0))
+
+
+def price_drops(cur_blk, prev_blk):
+    """Lines whose open (buyer-side) cost went down vs the previous stage, with the reason."""
+    m = match_prev_lines(cur_blk['lines'], prev_blk['lines'])
+    rows = []
+    for i, j in m.items():
+        a, b = cur_blk['lines'][i], prev_blk['lines'][j]
+        d = open_cost(a) - open_cost(b)
+        if d < -0.0005:
+            why = [k for k, lo in (('yy', a['yy'] < b['yy'] - 1e-9), ('price', a['price'] < b['price'] - 1e-9),
+                                   ('loss', a['loss'] < b['loss'] - 1e-9), ('cif', (a['cif'] or 0) < (b['cif'] or 0) - 1e-9)) if lo]
+            rows.append(dict(line=i, item=a['item'] or a['cat'], detail=a['detail'], why=why,
+                             cur=dict(yy=a['yy'], price=a['price'], loss=a['loss'], cif=a['cif']),
+                             prev=dict(yy=b['yy'], price=b['price'], loss=b['loss'], cif=b['cif']),
+                             delta=round(d, 4)))
+    if (cur_blk['cm'] or 0) < (prev_blk['cm'] or 0) - 1e-9:
+        rows.append(dict(line='CM', item='CM', detail='', why=['cm'], cur=dict(cm=cur_blk['cm']),
+                         prev=dict(cm=prev_blk['cm']), delta=round(cur_blk['cm'] - prev_blk['cm'], 4)))
+    return rows
+
+
+def keep_previous(cur_blk, prev_blk, keep):
+    """keep: {line_index or 'CM': ['yy','price','loss','cif'|'cm']} -> modifies cur_blk; returns internal cell edits."""
+    m = match_prev_lines(cur_blk['lines'], prev_blk['lines'])
+    from openpyxl.utils import get_column_letter as L
+    cols, edits = cur_blk['cols'], {}
+    for i, fields in keep.items():
+        if i == 'CM':
+            if 'cm' in fields and prev_blk['cm'] is not None:
+                cur_blk['cm'] = prev_blk['cm']
+                if cur_blk.get('cm_row'):
+                    edits[f"{L(cols['b_ttl'])}{cur_blk['cm_row']}"] = prev_blk['cm']
+            continue
+        if i not in m:
+            continue
+        a, b = cur_blk['lines'][i], prev_blk['lines'][m[i]]
+        for f in fields:
+            col = {'yy': 'b_yy', 'price': 'b_price', 'loss': 'b_loss', 'cif': 'b_cif'}[f]
+            if b.get(f) is None or col not in cols:
+                continue
+            a[f] = b[f]
+            edits[f"{L(cols[col])}{a['row']}"] = b[f]
+    return edits
