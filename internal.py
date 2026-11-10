@@ -42,11 +42,22 @@ def gender_of(*texts):
     return None
 
 
+STYLE_RE = re.compile(r'(?<!\d)(\d{7})(A?)(?![0-9A-Za-z])|(?<!\d)(\d{7})(?!\d)')
+
+
+def find_style(text):
+    """'1187346A_W...' -> '1187346A' (Asia fit keeps its A), '1187348_W' -> '1187348'."""
+    m = STYLE_RE.search(_s(text))
+    if not m:
+        return None
+    return (m.group(1) + m.group(2)) if m.group(1) else m.group(3)
+
+
 def style_no(*texts):
     for t in texts:
-        m = re.search(r'(\d{7})', _s(t))
-        if m:
-            return m.group(1)
+        st = find_style(t)
+        if st:
+            return st
     return None
 
 

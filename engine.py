@@ -8,7 +8,7 @@ import zipfile
 import openpyxl
 from PIL import Image
 
-from internal import read_internal, gender_of, previous_stage_block
+from internal import read_internal, gender_of, previous_stage_block, find_style
 from cbs_fill import (price_drops, keep_previous, prev_split_map, FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
                       format_fob, _norm, _s)
 from cbs_format import normalize_bytes, set_cells, subtotal_plan
@@ -341,29 +341,43 @@ def process_style(files, today=None, **opts):
 
 # ---------------- batch grouping ----------------
 def style_of(name, data=None):
-    m = re.search(r'(?<!\d)(\d{7})(?!\d)', clean_name(name))
-    if m:
-        return m.group(1)
+    st = find_style(clean_name(name))
+    if st:
+        return st
     if data:
         try:
             wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
             ws = wb.worksheets[0]
             for row in ws.iter_rows(max_row=12, max_col=6, values_only=True):
                 for v in row:
-                    m = re.search(r'(?<!\d)(\d{7})(?!\d)', _s(v))
-                    if m:
-                        return m.group(1)
+                    st = find_style(v)
+                    if st:
+                        return st
         except Exception:                                 # noqa
             pass
     return None
 
 
 def group_files(internals, bases, prevs, mnmks):
-    """Each arg: list of (name, bytes). Returns ({style: files}, unmatched_names)."""
-    groups, loose = {}, []
-    for role, lst in (('internal', internals), ('base', bases), ('prev', prevs), ('mnmk', mnmks)):
+    """Each arg: list of (name, bytes). Returns ({style: files}, unmatched [(role, name)]).
+    Styles are matched exactly (1187346A = Asia fit ≠ 1187346). A template/previous/MNMK whose number has no
+    exact internal is attached to the one internal with the same 7 digits (e.g. MNMK named without the A)."""
+    groups, loose, pending = {}, [], []
+    for name, data in internals:
+        st = style_of(name, data)
+        if not st:
+            loose.append(('internal', clean_name(name)))
+        elif 'internal' in groups.get(st, {}):
+            loose.append(('internal (duplicate)', clean_name(name)))
+        else:
+            groups.setdefault(st, {})['internal'] = (name, data)
+    for role, lst in (('base', bases), ('prev', prevs), ('mnmk', mnmks)):
         for name, data in lst:
             st = style_of(name, data)
+            if st and st not in groups:
+                same = [k for k in groups if k[:7] == st[:7]]
+                if len(same) == 1:
+                    st = same[0]
             if not st:
                 loose.append((role, clean_name(name)))
                 continue

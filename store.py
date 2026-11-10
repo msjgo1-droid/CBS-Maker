@@ -132,8 +132,8 @@ def parse_name(name):
     base = re.sub(r'^[0-9a-f]{8}-', '', os.path.splitext(os.path.basename(name))[0])
     parts = base.split('_')
     out = dict(style='', season='', stage='', date='')
-    m = re.search(r'(?<!\d)(\d{7})(?!\d)', base)
-    out['style'] = m.group(1) if m else ''
+    from internal import find_style
+    out['style'] = find_style(base) or ''
     for p in parts:
         if not out['season']:
             out['season'] = season_code(p) if re.match(r'^[SF]\d{2}', p.upper()) else ''
@@ -176,7 +176,8 @@ def records_from_buyer_file(name, data, fobs=None):
             fob = v if isinstance(v, (int, float)) else calc_fob(ws)[0]
         season = info['season'] or season_code(vs['B4'].value)
         stage = info['stage'] or _s(vs['B5'].value).upper()
-        style = info['style'] or (re.search(r'\d{7}', _s(vs['B1'].value)) or [''])[0]
+        from internal import find_style
+        style = info['style'] or find_style(vs['B1'].value) or ''
         recs.append(dict(season=season, stage=stage, style=style, color=color_of(ws.title),
                          fob=round(float(fob), 2), date=info['date'] or dt.date.today().isoformat(),
                          file=re.sub(r'^[0-9a-f]{8}-', '', os.path.basename(name))))
