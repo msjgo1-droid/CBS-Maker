@@ -81,6 +81,7 @@ def read_internal_block(ws, r0, r1, wsf=None):
                           parts=parts,
                           item=d, detail=e, remark=_s(ws.cell(r, cols['i_remark']).value),
                           price=price,
+                          iyy=_num(ws.cell(r, cols['i_yy']).value) if 'i_yy' in cols else None,
                           yy=_num(ws.cell(r, cols['b_yy']).value) or 0,
                           loss=_num(ws.cell(r, cols['b_loss']).value) or 1,
                           cif=_num(ws.cell(r, cols['b_cif']).value) if 'b_cif' in cols else None,
@@ -534,3 +535,20 @@ def keep_previous(cur_blk, prev_blk, keep):
             a[f] = b[f]
             edits[f"{L(cols[col])}{a['row']}"] = b[f]
     return edits
+
+
+def yy_drops(cur_blk, prev_blk):
+    """Lines whose INTERNAL yy went down vs the previous-date tab."""
+    m = match_prev_lines(cur_blk['lines'], prev_blk['lines'])
+    out = []
+    for i, j in m.items():
+        a, b = cur_blk['lines'][i], prev_blk['lines'][j]
+        if a.get('iyy') is None or b.get('iyy') is None:
+            continue
+        if a['iyy'] < b['iyy'] - 1e-6:
+            out.append(dict(line=i, item=a['item'] or a['cat'], detail=a['detail'],
+                            prev_yy=round(b['iyy'], 4), cur_yy=round(a['iyy'], 4),
+                            diff=round(a['iyy'] - b['iyy'], 4),
+                            pct=round((a['iyy'] - b['iyy']) / b['iyy'] * 100, 1) if b['iyy'] else None,
+                            prev_open=round(b['yy'], 4), cur_open=round(a['yy'], 4)))
+    return out

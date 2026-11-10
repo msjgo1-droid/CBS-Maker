@@ -65,6 +65,10 @@ T = {
     'match': ('항목 매칭 (수정 가능)', 'Item matching (editable)', 'Ghép hạng mục (có thể sửa)'),
     'drop': ('📉 이전 단계보다 낮아진 항목 (체크 = 이전 값 유지)', '📉 Items lower than previous stage (tick = keep previous)',
              '📉 Hạng mục thấp hơn giai đoạn trước (tích = giữ giá trị cũ)'),
+    'yy_title': ('📉 이전 날짜 탭보다 요척(Internal YY)이 줄어든 항목', '📉 Internal YY lower than the previous-date tab',
+                 '📉 Định mức nội bộ (YY) thấp hơn tab ngày trước'),
+    'yy_none': ('요척이 줄어든 항목이 없어요.', 'No YY decreases.', 'Không có định mức giảm.'),
+    'ok_btn': ('확인', 'OK', 'OK'),
     'apply': ('이 스타일 다시 만들기', 'Re-build this style', 'Tạo lại style này'),
     'panels': ('원단(마커) 시트', 'Fabric (marker) sheets', 'Sheet vải (sơ đồ)'),
     'changes': ('변경 내역', 'Changes', 'Thay đổi'),
@@ -191,7 +195,23 @@ with tab_make:
             res[stl] = dict(error=f'{type(e).__name__}: {e}')
 
 
+    def yy_table(d):
+        return pd.DataFrame([{'Item': x['item'], 'Detail': x['detail'][:40],
+                              'YY ' + d['prev_tab']: x['prev_yy'], 'YY ' + d['cur_tab']: x['cur_yy'],
+                              'Δ': x['diff'], 'Δ%': x['pct'], 'open YY (prev→now)': f"{x['prev_open']:g} → {x['cur_open']:g}"}
+                             for x in d['rows']])
+
+    @st.dialog(T['yy_title'][LI], width='large')
+    def yy_dialog():
+        for s_, r_ in sorted(res.items()):
+            for sh_, d_ in (r_.get('rep') or {}).get('yy_drops', {}).items():
+                st.markdown(f"**{s_}** · [{sh_}] `{d_['prev_tab']}` → `{d_['cur_tab']}`")
+                st.dataframe(yy_table(d_), hide_index=True, use_container_width=True)
+        if st.button(t('ok_btn'), type='primary'):
+            st.rerun()
+
     if groups and st.button(t('run'), type='primary', use_container_width=True):
+        st.session_state['yy_popup'] = True
         res.clear()
         bar = st.progress(0.0)
         for i, (stl, g) in enumerate(sorted(groups.items())):
@@ -199,6 +219,9 @@ with tab_make:
             run_one(stl, g)
         bar.progress(1.0, text='done')
 
+    if res and st.session_state.pop('yy_popup', False) and any(
+            (r.get('rep') or {}).get('yy_drops') for r in res.values()):
+        yy_dialog()
     if res:
         # ---------- 1pc / 1way alert first ----------
         bad = [(s, r['rep']['self_check']) for s, r in res.items() if 'rep' in r
@@ -225,6 +248,7 @@ with tab_make:
                           t('col_ifob'): ' / '.join(f"${(v['internal_fob'] or 0):.2f}" for v in rep['sheets'].values()),
                           t('col_self'): '✅' if sc['verdict'] == 'lengthwise' else '🚨 ' + VERD[sc['verdict']][LI],
                           '📉': '📉' if rep.get('drops') else '',
+                          'YY↓': sum(len(d['rows']) for d in rep.get('yy_drops', {}).values()) or '',
                           t('col_warn'): len(rep['warnings']), t('fname'): rep['filename']})
         st.dataframe(pd.DataFrame(srows), hide_index=True, use_container_width=True)
 
@@ -293,6 +317,9 @@ with tab_make:
                         st.image(rep['sketch_png'], width=260)
                 else:
                     sk = 0
+                for sh, d in rep.get('yy_drops', {}).items():
+                    st.markdown(f"**{t('yy_title')}** · [{sh}] `{d['prev_tab']}` → `{d['cur_tab']}`")
+                    st.dataframe(yy_table(d), hide_index=True, use_container_width=True)
                 # open price drop vs previous stage
                 keep = {}
                 for sh, dr in rep.get('drops', {}).items():

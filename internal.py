@@ -118,10 +118,21 @@ def read_internal(path, filename=''):
     return info, wf, wv
 
 
+def tab_date(title):
+    """'GTM2 S28-11.10(OPT2)' -> (11, 10); 'SMS-F27 9.7' -> (9, 7); None if no m.d in the name."""
+    m = re.findall(r'(?<!\d)(\d{1,2})\.(\d{1,2})(?!\d)', _s(title))
+    return (int(m[-1][0]), int(m[-1][1])) if m else None
+
+
 def previous_stage_block(wv, heather=False):
-    """(sheet_index, title, r0, r1, fob) of the previous stage = next tab to the right that has cost blocks."""
+    """(sheet_index, title, r0, r1, fob) of the previous stage: the next tab to the right whose sheet date is
+    different from the current tab's (tabs of the same date, e.g. 11.10(OG) / 11.10(OPT2), are options of the
+    same stage, not the previous one)."""
+    cur = tab_date(wv.worksheets[0].title)
     for si, ws in enumerate(wv.worksheets[1:], 1):
         if ws.sheet_state != 'visible':
+            continue
+        if cur and tab_date(ws.title) == cur:
             continue
         bl = find_blocks(ws)
         if not bl:

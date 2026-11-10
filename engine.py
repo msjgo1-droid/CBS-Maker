@@ -9,7 +9,7 @@ import openpyxl
 from PIL import Image
 
 from internal import read_internal, gender_of, previous_stage_block, find_style
-from cbs_fill import (price_drops, keep_previous, prev_split_map, FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
+from cbs_fill import (yy_drops, price_drops, keep_previous, prev_split_map, FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
                       format_fob, _norm, _s)
 from cbs_format import normalize_bytes, set_cells, subtotal_plan
 from panels import (is_panel_sheet, read_mnmk, pick_block, build_from_mnmk, recompute_marker,
@@ -107,7 +107,8 @@ def place_sketch(ws, png):
 # ---------------- main ----------------
 def generate(internal, internal_name, base=None, base_name='', prev=None, prev_name='', mnmk=None,
              block_map=None, manual=None, crop=True, sketch=0, today=None, keep=None):
-    rep = dict(warnings=[], sheets={}, panels=[], filename='', self_check=None, drops={}, internal_edits={})
+    rep = dict(warnings=[], sheets={}, panels=[], filename='', self_check=None, drops={}, internal_edits={},
+               yy_drops={})
     info, wf, wv = read_internal(io.BytesIO(internal), clean_name(internal_name))
     rep['internal'] = info
     if not info['gender']:
@@ -167,6 +168,9 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
         if pv:
             pblk = read_internal_block(wv.worksheets[pv[0]], pv[2], pv[3])
             rows_ = price_drops(blk, pblk)
+            yd = yy_drops(blk, pblk)
+            if yd:
+                rep['yy_drops'][ws.title] = dict(cur_tab=info['tab'], prev_tab=pv[1], rows=yd)
             if b['fob'] is not None and pv[4] is not None and b['fob'] < pv[4] - 0.005:
                 rep['drops'][ws.title] = dict(prev_tab=pv[1], prev_fob=pv[4], cur_fob=b['fob'], rows=rows_,
                                               block=b['idx'])
