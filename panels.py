@@ -113,31 +113,56 @@ def _longest_run(valid, gap=30):
     return max(runs, key=lambda r: r[1] - r[0])
 
 
-def crop_marker(data, pad=2):
-    """Crop a CAD (Gerber/Optitex) screenshot down to the marker canvas (light-grey #F9F9F9 background)."""
-    im = Image.open(io.BytesIO(data)).convert('RGB')
-    a = np.asarray(im).astype(int)
+def _crop_by_background(a, im, pad):
     vals, counts = np.unique(a.reshape(-1, 3)[::7], axis=0, return_counts=True)
-    order = np.argsort(-counts)
     bg = None
-    for k in order[:6]:                              # most common light, non-white, neutral colour
+    for k in np.argsort(-counts)[:6]:                # most common light, non-white, neutral colour
         r, g, b = vals[k]
         if 235 <= r <= 252 and abs(r - g) < 4 and abs(r - b) < 4:
             bg = vals[k]
             break
     if bg is None:
-        return data, im.size, im.size
+        return None
     sat = (a.max(axis=2) - a.min(axis=2)) > 45
-    m = (np.abs(a - bg).max(axis=2) <= 3) | sat          # canvas = background or coloured pieces
+    m = (np.abs(a - bg).max(axis=2) <= 3) | sat
     rr = _longest_run(m.sum(axis=1) >= 0.25 * a.shape[1], gap=6)
     if not rr:
-        return data, im.size, im.size
+        return None
     band = m[rr[0]:rr[1] + 1]
     cr = _longest_run(band.sum(axis=0) >= 0.5 * band.shape[0], gap=6)
     if not cr or (cr[1] - cr[0]) < 50 or (rr[1] - rr[0]) < 20:
+        return None
+    return cr[0], rr[0], cr[1], rr[1]
+
+
+def _crop_by_pieces(a, pad):
+    """White-background CAD (Gerber AccuMark): box around the coloured pieces, ignoring thin grid lines,
+    the status bar and the taskbar."""
+    from scipy import ndimage
+    sat = (a.max(axis=2) - a.min(axis=2)) > 40
+    sat = ndimage.binary_opening(sat, iterations=2)          # drop 1-3px pink/blue grid lines
+    rr = _longest_run(sat.sum(axis=1) >= max(3, 0.01 * a.shape[1]), gap=8)
+    if not rr or rr[1] - rr[0] < 20:
+        return None
+    band = sat[rr[0]:rr[1] + 1]
+    cr = _longest_run(band.sum(axis=0) >= max(2, 0.03 * band.shape[0]), gap=15)
+    if not cr or cr[1] - cr[0] < 30:
+        return None
+    return cr[0], rr[0], cr[1], rr[1]
+
+
+def crop_marker(data, pad=3):
+    """Crop a CAD screenshot down to the marker only."""
+    im = Image.open(io.BytesIO(data)).convert('RGB')
+    a = np.asarray(im).astype(int)
+    box = _crop_by_background(a, im, pad)
+    if box is None or (box[2] - box[0]) * (box[3] - box[1]) > 0.85 * a.shape[0] * a.shape[1]:
+        box = _crop_by_pieces(a, pad) or box
+    if box is None:
         return data, im.size, im.size
-    x0, x1 = max(cr[0] - pad, 0), min(cr[1] + pad, a.shape[1] - 1)
-    y0, y1 = max(rr[0] - pad, 0), min(rr[1] + pad, a.shape[0] - 1)
+    x0, y0, x1, y1 = box
+    x0, y0 = max(x0 - pad, 0), max(y0 - pad, 0)
+    x1, y1 = min(x1 + pad, a.shape[1] - 1), min(y1 + pad, a.shape[0] - 1)
     c = im.crop((x0, y0, x1 + 1, y1 + 1))
     buf = io.BytesIO()
     c.save(buf, 'PNG')

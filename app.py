@@ -69,8 +69,13 @@ T = {
                  '📉 Định mức nội bộ (YY) thấp hơn tab ngày trước'),
     'yy_none': ('요척이 줄어든 항목이 없어요.', 'No YY decreases.', 'Không có định mức giảm.'),
     'ok_btn': ('확인', 'OK', 'OK'),
-    'basis': ('💲 바이어 open 가격 기준 선택', '💲 Buyer open price basis', '💲 Chọn cơ sở giá open cho buyer'),
-    'basis_hint': ('Internal 파일의 내부/open 가격은 바뀌지 않아요. 선택한 기준은 바이어 CBS에만 적용돼요 → 고른 뒤 "이 스타일 다시 만들기".',
+    'pic_title': ('🖼 원단 시트 MNMK 사진 출처', '🖼 Marker picture source per fabric sheet', '🖼 Nguồn ảnh sơ đồ cho từng sheet vải'),
+    'pic_hint': ('자동: SELF는 1pc 1way lengthwise인 쪽, 나머지 원단은 Internal 사진. Internal 사진을 쓰면 폭·효율·Q\'ty도 그 사진 값으로 바뀌어요. YY는 항상 Open YY 기준.',
+                 'Auto: SELF uses whichever is 1pc/1way lengthwise, other fabrics use the internal picture. Using the internal picture also takes its width / efficiency / Q\'ty. YY always follows the open YY.',
+                 'Tự động: SELF chọn ảnh 1pc/1way theo chiều dọc, vải khác dùng ảnh nội bộ. Dùng ảnh nội bộ thì khổ / hiệu suất / SL cũng theo ảnh đó. YY luôn theo YY open.'),
+    'pic_prev': ('이전 제출 CBS', 'Previous CBS', 'CBS đã nộp'),
+    'basis': ('💲 바이어 CBS에 쓸 Open 가격 기준', '💲 Buyer open price basis', '💲 Chọn cơ sở giá open cho buyer'),
+    'basis_hint': ('Internal 파일의 내부(Internal)·오픈(Open) 가격은 바뀌지 않아요. 선택한 기준은 바이어 CBS에만 적용돼요 → 고른 뒤 "이 스타일 다시 만들기".',
                    'The internal file prices never change; the choice only applies to the buyer CBS → then "Re-build this style".',
                    'Giá trong file nội bộ không đổi; lựa chọn chỉ áp dụng cho CBS buyer → sau đó bấm "Tạo lại style này".'),
     'apply': ('이 스타일 다시 만들기', 'Re-build this style', 'Tạo lại style này'),
@@ -91,9 +96,11 @@ T = {
     'col_self': ('Self 1pc/1way', 'Self 1pc/1way', 'Self 1pc/1way'), 'col_warn': ('경고', 'Warnings', 'Cảnh báo'),
 }
 LI = ['KO', 'EN', 'VI'].index(lang)
-BASIS = {'current': ('현재 Internal open 그대로 (기본)', 'Current internal open (default)', 'Giá open nội bộ hiện tại (mặc định)'),
-         'prev_yy': ('YY만 이전 단계 open 유지', 'Keep previous open YY only', 'Giữ YY open giai đoạn trước'),
-         'prev_all': ('낮아진 항목 모두 이전 open 유지', 'Keep previous open for every lower item', 'Giữ open cũ cho mọi hạng mục giảm'),
+PICSRC = {'auto': ('자동', 'Auto', 'Tự động'), 'internal': ('Internal 사진', 'Internal picture', 'Ảnh nội bộ'),
+          'prev': ('이전 제출 CBS 사진', 'Previous CBS picture', 'Ảnh CBS đã nộp')}
+BASIS = {'current': ('현재 Open 그대로 (기본)', 'Current internal open (default)', 'Giá open nội bộ hiện tại (mặc định)'),
+         'prev_yy': ('Open YY만 이전 단계 값 유지', 'Keep previous open YY only', 'Giữ YY open giai đoạn trước'),
+         'prev_all': ('낮아진 Open 항목 모두 이전 값 유지', 'Keep previous open for every lower item', 'Giữ open cũ cho mọi hạng mục giảm'),
          'custom': ('항목별 직접 선택', 'Choose per item', 'Chọn từng hạng mục')}
 t = lambda k: T[k][LI]
 VERD = {'lengthwise': ('lengthwise', 'lengthwise', 'chiều dọc'), 'widthwise': ('widthwise (세로 배치)', 'widthwise', 'chiều ngang'),
@@ -136,10 +143,10 @@ WARN = {
     'recalc': ('Internal 파일에 계산된 값이 없어서(엑셀에서 저장 안 된 파일) 다시 계산해서 읽었어요 — 가능하면 엑셀에서 한 번 열어 저장한 파일을 올려주세요',
                'The internal file had no calculated values (never saved in Excel) — recalculated to read it; ideally open & save it in Excel first',
                'File nội bộ chưa có giá trị tính toán (chưa lưu bằng Excel) — đã tính lại để đọc; nên mở và lưu bằng Excel trước'),
-    'basis_prev': ('[{sheet}] 바이어 open을 이전 단계({tab}) 기준으로 만듦: 바이어 ${buyer} / Internal open ${internal} (Internal 파일은 그대로)',
+    'basis_prev': ('[{sheet}] 바이어 CBS를 이전 단계({tab}) Open 기준으로 만듦: 바이어 CBS ${buyer} / Internal 파일 Open ${internal} (Internal 파일은 그대로)',
                    '[{sheet}] buyer open built on previous stage ({tab}): buyer ${buyer} / internal open ${internal} (internal file unchanged)',
                    '[{sheet}] Open buyer theo giai đoạn trước ({tab}): buyer ${buyer} / nội bộ ${internal} (file nội bộ giữ nguyên)'),
-    'fob_gap': ('[{sheet}] 바이어 FOB ${buyer}가 Internal open FOB ${internal}와 {diff} 차이 (허용 ±$0.01 초과) — 아래 매칭 표 확인',
+    'fob_gap': ('[{sheet}] 바이어 CBS FOB ${buyer}가 Internal 파일의 Open FOB ${internal}와 {diff} 차이 (허용 ±$0.01 초과) — 아래 매칭 표 확인',
                 '[{sheet}] buyer FOB ${buyer} differs from internal open FOB ${internal} by {diff} (over ±$0.01) — check the matching table',
                 '[{sheet}] FOB buyer ${buyer} lệch {diff} so với FOB nội bộ ${internal} (vượt ±$0.01) — kiểm tra bảng ghép'),
     'shared': ('[{sheet}] {row}행 "{comp}": 같은 원단({match})이 위 행에 이미 들어감 — Internal에 (a+b) 나눔이 없고 이전 CBS도 안 나눠서 0으로 둠',
@@ -219,7 +226,7 @@ with tab_make:
         o = opts.get(stl, {})
         try:
             data, rep = process_style(g, crop=crop, block_map=o.get('block_map'), manual=o.get('manual'),
-                                      sketch=o.get('sketch', 0), keep=o.get('keep'))
+                                      sketch=o.get('sketch', 0), keep=o.get('keep'), pics=o.get('pics'))
             res[stl] = dict(data=data, rep=rep, files=g)
         except Exception as e:                               # noqa
             res[stl] = dict(error=f'{type(e).__name__}: {e}')
@@ -278,7 +285,7 @@ with tab_make:
                           t('col_ifob'): ' / '.join(f"${(v['internal_fob'] or 0):.2f}" for v in rep['sheets'].values()),
                           t('col_self'): '✅' if sc['verdict'] == 'lengthwise' else '🚨 ' + VERD[sc['verdict']][LI],
                           '📉': '📉' if rep.get('drops') else '',
-                          'YY↓': sum(len(d['rows']) for d in rep.get('yy_drops', {}).values()) or '',
+                          'YY↓': sum(len(d['rows']) for d in rep.get('yy_drops', {}).values()) or 0,
                           t('col_warn'): len(rep['warnings']), t('fname'): rep['filename']})
         st.dataframe(pd.DataFrame(srows), hide_index=True, use_container_width=True)
 
@@ -351,6 +358,26 @@ with tab_make:
                 for sh, d in rep.get('yy_drops', {}).items():
                     st.markdown(f"**{t('yy_title')}** · [{sh}] `{d['prev_tab']}` → `{d['cur_tab']}`")
                     st.dataframe(yy_table(d), hide_index=True, use_container_width=True)
+                # marker picture source per fabric sheet
+                pics = {}
+                if rep.get('pic_choice'):
+                    st.markdown(f"**{t('pic_title')}**")
+                    st.caption(t('pic_hint'))
+                    VER = {'lengthwise': '✅ lengthwise', 'mixed': '⚠️ mixed', 'widthwise': '⚠️ widthwise', 'unknown': '—'}
+                    for pc in rep['pic_choice']:
+                        c1_, c2_, c3_ = st.columns([1.2, 2, 2])
+                        cur = (o.get('pics') or {}).get(pc['sheet'], 'auto')
+                        pics[pc['sheet']] = c1_.radio(pc['sheet'], ['auto', 'internal', 'prev'],
+                                                      index=['auto', 'internal', 'prev'].index(cur),
+                                                      key=f"pc_{s}_{pc['sheet']}",
+                                                      format_func=lambda k: PICSRC[k][LI])
+                        c1_.caption(f"→ {PICSRC[pc['used']][LI]}")
+                        if pc['internal_png']:
+                            c2_.image(pc['internal_png'], caption=f"Internal · {VER.get(pc['internal'], '')}",
+                                      use_container_width=True)
+                        if pc['previous_png']:
+                            c3_.image(pc['previous_png'], caption=f"{t('pic_prev')} · {VER.get(pc['previous'], '')}",
+                                      use_container_width=True)
                 # buyer OPEN price basis (internal file itself is never changed)
                 keep = {}
                 for sh, dr in rep.get('drops', {}).items():
@@ -408,7 +435,7 @@ with tab_make:
                     if m:
                         man[sh] = m
                 if st.button(t('apply'), key=f'ap_{s}'):
-                    o.update(block_map=bm, sketch=sk, manual=man or o.get('manual'), keep=keep)
+                    o.update(block_map=bm, sketch=sk, manual=man or o.get('manual'), keep=keep, pics=pics or o.get('pics'))
                     run_one(s, r['files'])
                     st.rerun()
                 if rep.get('internal_mnmk'):

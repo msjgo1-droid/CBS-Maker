@@ -13,7 +13,7 @@ from cbs_fill import (code_overlap, yy_drops, price_drops, keep_previous, prev_s
                       format_fob, _norm, _s)
 from cbs_format import normalize_bytes, set_cells, subtotal_plan
 from panels import (is_panel_sheet, read_mnmk, pick_block, build_from_mnmk, recompute_marker,
-                    panel_yy, panel_codes, find_fields, one_pc_one_way)
+                    panel_yy, panel_codes, find_fields, one_pc_one_way, crop_marker)
 from xlimages import pictures, to_png
 from internal_mnmk import read_internal_mnmk
 from orientation import judge
@@ -114,8 +114,8 @@ def place_sketch(ws, png):
 
 # ---------------- main ----------------
 def generate(internal, internal_name, base=None, base_name='', prev=None, prev_name='', mnmk=None,
-             block_map=None, manual=None, crop=True, sketch=0, today=None, keep=None):
-    rep = dict(warnings=[], sheets={}, panels=[], filename='', self_check=None, drops={}, basis={},
+             block_map=None, manual=None, crop=True, sketch=0, today=None, keep=None, pics=None):
+    rep = dict(warnings=[], sheets={}, panels=[], filename='', self_check=None, drops={}, basis={}, pic_choice=[],
                yy_drops={})
     info, wf, wv = read_internal(io.BytesIO(internal), clean_name(internal_name))
     rep['internal'] = info
@@ -243,11 +243,28 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             if warn:
                 rep['warnings'].append(dict(warn, sheet=ms['title']))
             build_from_mnmk(out, layout, ms['title'], blk, crop=crop)
-    elif prev_wb and any(is_panel_sheet(s) for s in prev_wb.worksheets):
-        if base:
+    elif (prev_wb and any(is_panel_sheet(s) for s in prev_wb.worksheets)) or \
+            any(is_panel_sheet(s) for s in out.worksheets):
+        # previous CBS fabric sheets (or ones already in the uploaded buyer file) -> check picture & fill blanks
+        if base and prev_wb:
             for s in prev_wb.worksheets:
                 if is_panel_sheet(s) and s.title not in out.sheetnames:
                     copy_sheet(s, out, s.title)
+        # marker PICTURE: internal right-side MNMK vs the one in the previous CBS -> keep the correct one
+        b0 = info['blocks'][bmap[mains[0].title]] if mains else None
+        lines0 = read_internal_block(wsv, b0['r0'], b0['r1'])['lines'] if b0 else []
+        im = read_internal_mnmk(internal, wsv, lines0, info['gender'])
+        if im:
+            rep['pic_choice'] = choose_pictures(out, im, pics or {}, crop)
+            rep['internal_mnmk'] = [dict(title=x['title'], line=x['line'], ok=x['ok'],
+                                         **{k: x['fields'].get(k) for k in ('width', 'eff', 'gqty', 'pqty', 'yy', 'direction')})
+                                    for x in im]
+        for s in [s for s in out.worksheets if is_panel_sheet(s)]:
+            f = find_fields(s, 1, 12)
+            miss = [n for k, n in (('gqty', "Garment Q'ty"), ('pqty', "Panel Q'ty"))
+                    if k in f and s.cell(*f[k]).value in (None, '')]
+            if miss:
+                rep['warnings'].append(W('ocr_check', sheet=s.title, miss=', '.join(miss)))
     elif not any(is_panel_sheet(s) for s in out.worksheets):
         # no previous submission, no MNMK file -> MNMK pictures on the right side of the internal
         b0 = info['blocks'][bmap[mains[0].title]] if mains else None
@@ -261,12 +278,14 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             rep['warnings'].append(W('from_internal', n=len(im)))
             for x in im:
                 x['block']['style'] = info.get('style')
-                build_from_mnmk(out, layout, x['title'], x['block'], crop=False)
+                build_from_mnmk(out, layout, x['title'], x['block'], crop=crop is not False)
                 miss = [k for k in ('width', 'eff', 'gqty', 'pqty') if not x['fields'].get(k)]
                 if miss or x['ok'] is False:
                     rep['warnings'].append(W('ocr_check', sheet=x['title'], miss=', '.join(miss) or "Garment Q'ty"))
         else:
             rep['warnings'].append(W('no_panels'))
+    for p in [s for s in out.worksheets if is_panel_sheet(s)]:
+        _clear_layout_junk(p)
     rep['panels'] = sync_panels(out, mains, info, rep['warnings'])
     # fabric (marker) sheets: DATE = the day this CBS is made
     run_day = today or dt.date.today()
@@ -293,6 +312,88 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
     buf = io.BytesIO()
     out.save(buf)
     return buf.getvalue(), rep
+
+
+def _pic_match(ws, cands):
+    """Internal right-side picture that belongs to this fabric sheet (codes, then name)."""
+    pc = panel_codes(ws)
+    for x in cands:
+        if code_overlap(pc, {t for t in re.split(r'[\s/,()#:]+', x['header'].upper()) if len(t) >= 5
+                             and re.search(r'\d', t)}):
+            return x
+    t = _norm(re.sub(r'\(.*?\)', '', ws.title))
+    for x in cands:
+        n = _norm(re.sub(r'\(.*?\)', '', x['title']))
+        if t and n and (t in n or n in t):
+            return x
+    return None
+
+
+def _is_self(title):
+    return bool(re.search(r'SELF|BODY|SHELL', title.upper()))
+
+
+def choose_pictures(out, im, pics, crop):
+    """Per fabric sheet: put the internal MNMK picture or keep the previous CBS one.
+    auto: SELF -> whichever is 1pc/1way lengthwise (internal if both or neither); other fabrics -> internal."""
+    from openpyxl.utils import get_column_letter as L
+    rep, used = [], set()
+    for ws in [s for s in out.worksheets if is_panel_sheet(s)]:
+        cand = [x for x in im if id(x) not in used]
+        x = _pic_match(ws, cand)
+        if not x:
+            continue
+        used.add(id(x))
+        old = [i for i in ws._images if hasattr(i.anchor, '_from') and i.anchor._from.row >= 6]
+        prev_png = img_bytes(max(old, key=lambda i: (i.width or 0) * (i.height or 0))) if old else None
+        int_png = x['block']['image']
+        if int_png is not None and not isinstance(int_png, (bytes, bytearray)):
+            int_png = img_bytes(int_png)
+        if int_png and crop is not False:
+            int_png = crop_marker(int_png)[0]          # only the marker, not the whole CAD screen
+        v_int = judge(int_png)['verdict'] if int_png else 'unknown'
+        v_prev = judge(prev_png)['verdict'] if prev_png else 'unknown'
+        want = pics.get(ws.title, 'auto')
+        if want == 'auto':
+            if not int_png:
+                want = 'prev'
+            elif _is_self(ws.title) and v_prev == 'lengthwise' and v_int != 'lengthwise':
+                want = 'prev'
+            else:
+                want = 'internal'
+        f = find_fields(ws, 1, 12)
+        fx = x['fields']
+        if want != 'internal':
+            # previous picture kept, but fill fields the previous sheet left empty
+            for k in ('width', 'eff', 'pqty', 'gqty'):
+                if fx.get(k) and k in f and ws.cell(*f[k]).value in (None, ''):
+                    ws.cell(*f[k]).value = fx[k]
+        if want == 'internal' and int_png:
+            for i in old:
+                ws._images.remove(i)
+            for k in ('width', 'eff', 'pqty', 'gqty'):
+                if fx.get(k) and k in f:
+                    ws.cell(*f[k]).value = fx[k]
+            if fx.get('direction') and 'size' in f:
+                ws.cell(*f['size']).value = x['block']['size']
+            w = min(Image.open(io.BytesIO(int_png)).size[0], 900)
+            sz = Image.open(io.BytesIO(int_png)).size
+            row = (f['gqty'][0] + 2) if 'gqty' in f else 8
+            add_image(ws, int_png, f'A{row}', w, int(sz[1] * w / sz[0]))
+        rep.append(dict(sheet=ws.title, used=want, internal=v_int, previous=v_prev,
+                        internal_png=int_png, previous_png=prev_png))
+    return rep
+
+
+def _clear_layout_junk(ws):
+    """Stray cells an older app version copied from its layout asset (K5 '#REF!', L5 36, C7 10, E7 0.712 ...)."""
+    if ws['K5'].value == '#REF!':
+        for ref in ('K5', 'L5', 'M5', 'N5', 'O5', 'P5', 'Q5', 'C7', 'E7', 'J7'):
+            ws[ref].value = None
+    for row in ws.iter_rows(min_row=1, max_row=12):
+        for c in row:
+            if c.value == '#REF!':
+                c.value = None
 
 
 def self_panel(out, panels_rep):
