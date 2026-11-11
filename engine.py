@@ -9,12 +9,13 @@ import openpyxl
 from PIL import Image
 
 from internal import read_internal, gender_of, previous_stage_block, find_style
-from cbs_fill import (yy_drops, price_drops, keep_previous, prev_split_map, FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
+from cbs_fill import (code_overlap, yy_drops, price_drops, keep_previous, prev_split_map, FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
                       format_fob, _norm, _s)
 from cbs_format import normalize_bytes, set_cells, subtotal_plan
 from panels import (is_panel_sheet, read_mnmk, pick_block, build_from_mnmk, recompute_marker,
                     panel_yy, panel_codes, find_fields, one_pc_one_way)
 from xlimages import pictures, to_png
+from internal_mnmk import read_internal_mnmk
 from orientation import judge
 from xlutil import copy_sheet, add_image, img_bytes
 
@@ -44,17 +45,24 @@ def load(src):
 
 
 def default_block_map(info, main_titles):
-    act = [b for b in info['blocks'] if b['idx'] in info['active']] or info['blocks'][-1:]
+    """Solid sheet -> solid block, Heather sheet -> heather block (submitted block of that kind first,
+    otherwise the last one of that kind); single sheet -> active block."""
+    blocks = info['blocks']
+    act = [b for b in blocks if b['idx'] in info['active']] or blocks[-1:]
+
+    def pick(kind):
+        pool = [b for b in blocks if b['heather'] == kind]
+        sub = [b for b in pool if b['submitted']]
+        return (sub or pool[-1:] or act)[0]
     out = {}
     for t in main_titles:
         v = variant_of(t)
         if v == 'heather':
-            cand = [b for b in act if b['heather']] or [b for b in info['blocks'] if b['heather']]
+            out[t] = pick(True)['idx']
         elif v == 'solid':
-            cand = [b for b in act if not b['heather']]
+            out[t] = pick(False)['idx']
         else:
-            cand = act
-        out[t] = (cand or act)[0]['idx']
+            out[t] = act[0]['idx']
     return out
 
 
@@ -180,12 +188,19 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             if k:
                 rep['internal_edits'].update(keep_previous(blk, pblk, k))
         res = fill_sheet(ws, blk, variant_of(ws.title), (manual or {}).get(ws.title), prev_splits=psplit)
+        if b['fob'] is not None and res.get('excluded') and abs(calc_fob(ws)[0] - b['fob']) > 0.01:
+            # leaving the small interlining out would break the ±$0.01 rule -> put it in
+            res = fill_sheet(ws, blk, variant_of(ws.title), (manual or {}).get(ws.title), prev_splits=psplit,
+                             include_minor=True)
         format_fob(ws)
         if png:
             place_sketch(ws, png)
         res['block'] = b['idx']
         res['internal_fob'] = b['fob']
         res['fob'], res['material'] = calc_fob(ws)
+        if b['fob'] is not None and abs(res['fob'] - b['fob']) > 0.01:
+            rep['warnings'].insert(0, W('fob_gap', sheet=ws.title, buyer=f"{res['fob']:.4f}", internal=f"{b['fob']:.4f}",
+                                        diff=f"{res['fob'] - b['fob']:+.4f}"))
         res['lines'] = [f"{l['cat']} / {l['detail']}" for l in blk['lines']]
         rep['sheets'][ws.title] = res
         for l in res['log']:
@@ -216,10 +231,30 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             if warn:
                 rep['warnings'].append(dict(warn, sheet=ms['title']))
             build_from_mnmk(out, layout, ms['title'], blk, crop=crop)
-    elif prev_wb and base:
-        for s in prev_wb.worksheets:
-            if is_panel_sheet(s) and s.title not in out.sheetnames:
-                copy_sheet(s, out, s.title)
+    elif prev_wb and any(is_panel_sheet(s) for s in prev_wb.worksheets):
+        if base:
+            for s in prev_wb.worksheets:
+                if is_panel_sheet(s) and s.title not in out.sheetnames:
+                    copy_sheet(s, out, s.title)
+    elif not any(is_panel_sheet(s) for s in out.worksheets):
+        # no previous submission, no MNMK file -> MNMK pictures on the right side of the internal
+        b0 = info['blocks'][bmap[mains[0].title]] if mains else None
+        lines0 = read_internal_block(wsv, b0['r0'], b0['r1'])['lines'] if b0 else []
+        im = read_internal_mnmk(internal, wsv, lines0, info['gender'])
+        rep['internal_mnmk'] = [dict(title=x['title'], line=x['line'], ok=x['ok'],
+                                     **{k: x['fields'].get(k) for k in ('width', 'eff', 'gqty', 'pqty', 'yy', 'direction')})
+                                for x in im]
+        if im:
+            layout = openpyxl.load_workbook(os.path.join(HERE, 'assets', 'panel_layout.xlsx')).worksheets[0]
+            rep['warnings'].append(W('from_internal', n=len(im)))
+            for x in im:
+                x['block']['style'] = info.get('style')
+                build_from_mnmk(out, layout, x['title'], x['block'], crop=False)
+                miss = [k for k in ('width', 'eff', 'gqty', 'pqty') if not x['fields'].get(k)]
+                if miss or x['ok'] is False:
+                    rep['warnings'].append(W('ocr_check', sheet=x['title'], miss=', '.join(miss) or "Garment Q'ty"))
+        else:
+            rep['warnings'].append(W('no_panels'))
     rep['panels'] = sync_panels(out, mains, info, rep['warnings'])
     # fabric (marker) sheets: DATE = the day this CBS is made
     run_day = today or dt.date.today()
@@ -270,7 +305,7 @@ def sync_panels(out, mains, info, warnings):
             mat = material_text(ws, r, c).upper()
             codes = {t for t in re.split(r'[\s/,()#]+', mat) if len(t) >= 5 and re.search(r'\d', t)}
             net = ws.cell(r, c['net']).value
-            rows.append(dict(sheet=ws.title, row=r, comp=comp, codes=codes, mat=_norm(mat),
+            rows.append(dict(sheet=ws.title, row=r, comp=comp, codes=codes, mat=_norm(mat), sec=sec,
                              net=net if isinstance(net, (int, float)) else 0))
     groups = {}
     for p in [s for s in out.worksheets if is_panel_sheet(s)]:
@@ -278,9 +313,16 @@ def sync_panels(out, mains, info, warnings):
         nm = lambda r: _norm(re.sub(r'\(.*?\)', '', r['comp']))
         by_name = [r for r in rows if r['net'] and nm(r) and (nm(r) in pt or pt in nm(r))] or \
                   [r for r in rows if r['net'] and len(pt) > 4 and pt in r['mat']]
-        by_code = [r for r in rows if r['codes'] & pc and r['net']]
+        by_code = [r for r in rows if r['net'] and code_overlap(r['codes'], pc)]
+        if not by_name and not by_code and pt.startswith('self'):
+            # 'SELF' sheet <-> the Shell 1 / first Body fabric row of S28 templates
+            body = [r for r in rows if r['net'] and r['sec'] == 'body']
+            by_name = [r for r in body if 'shell' in r['comp'].lower()] or body[:1]
         both = [r for r in by_code if r in by_name]
         cand = both or (by_code if len({r['comp'].lower() for r in by_code}) == 1 else []) or by_name or by_code
+        vt = variant_of(p.title)
+        if vt and cand:
+            cand = [r for r in cand if variant_of(r['sheet']) == vt] or cand
         if not cand:
             warnings.append(W('panel_nomatch', sheet=p.title))
             continue

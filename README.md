@@ -16,6 +16,7 @@ streamlit run app.py
 | CO 스타일 | ✅ | 새 template (없으면 이전 제출본을 베이스로) | ✅ | – |
 | 신규 / MNMK 반영 | ✅ | ✅ | – | ✅ |
 | CO + MNMK가 틀린 경우 | ✅ | ✅ | ✅ | ✅ |
+| 이전 제출본·MNMK 둘 다 없음 | ✅ | ✅ | – | – → Internal 우측 MNMK 사진으로 원단 시트 생성 |
 
 ## 규칙 (요약)
 - Internal = 항상 정답. 맨 앞 탭 = 최신. `CBS m/d $금액` 메모가 FOB와 같으면 제출 블록.
@@ -34,6 +35,15 @@ streamlit run app.py
 - Self(body) 마커는 1pc / 1way(lengthwise) 원칙 — 마커 사진에서 같은 색(=가먼트 1벌) 패널 묶음이 길이 방향으로 모였는지 판정, lengthwise 면적 75% 미만이면 실행 시 맨 위 빨간 경고 + 표시된 사진.
 - 정돈된 Internal: REMARK 칸에 단계(섹션)별 가격 합계(=SUM)가 없으면 추가 — 원단 / Special Trim / Embellishment / Thread / Labels / Packing / Profit·OH·Finance. 이미 있는 합계(여러 섹션을 묶은 것 포함)는 절대 건드리지 않음(Profit 수식이 참조하기 때문).
 - 정돈된 Internal: 사용된 블록의 open(바이어) FOB 오른쪽 칸에 "CBS 실행일 $바이어FOB" 기록 (예: CBS 11/9 $23.76).
+
+- 원단(마커) 시트 출처 우선순위: ① MNMK 파일 ② 이전 제출본(CO) ③ Internal 우측(R열~)에 붙여둔 MNMK 사진. ③은 사진에서 폭·효율·Garment/Panel Q'ty를 OCR(tesseract)로 읽고 마커 부분만 잘라 넣음 → 읽은 값은 화면 표로 확인, 못 읽거나 안 맞으면 경고.
+
+## FOB 일치 원칙 (±$0.01)
+- 바이어 CBS FOB는 Internal open FOB와 $0.01 넘게 차이나면 안 됨 → 생성할 때마다 계산해서 넘으면 빨간 경고.
+- Internal에 없는 바이어 행은 0, Solid 시트의 heather 행 / Heather 시트의 solid 행 / 컬러가 전부 N/A인 행은 0.
+- Internal OH·Profit·Finance가 ROUNDUP/ROUNDDOWN/ROUND로 센트 단위 반올림돼 있으면 바이어 수식도 같은 함수로 맞춤.
+- TTL만 적힌 항목(예: Sublimation print $3.00)도 1 × 1 × 금액으로 반영.
+- Interlining은 기본 제외지만, 빼면 ±$0.01을 넘을 때는 넣음.
 
 ## 알려진 제한
 - 바이어 template/이전 제출본에 WMF/EMF 이미지가 있으면 결과 파일에서 빠짐(경고 표시).

@@ -116,6 +116,18 @@ WARN = {
                    '[{sheet}] Giá FOB open giảm so với giai đoạn trước ({tab}) ${prev} → ${cur} — xem nguyên nhân bên dưới, có thể giữ giá trị cũ'),
     'no_5pct': ('[{sheet}] MNMK에 shrinkage 5% 마커가 없어 다른 블록 사용', '[{sheet}] no 5% shrinkage marker in MNMK — another block used',
                 '[{sheet}] MNMK không có sơ đồ co rút 5% — dùng block khác'),
+    'from_internal': ('이전 제출본·MNMK 파일이 없어 Internal 우측 MNMK 사진 {n}장으로 원단 시트를 만들었어요 — 사진에서 읽은 값(폭·효율·Q\'ty)을 확인해 주세요',
+                      'No previous submission / MNMK file — {n} fabric sheets built from the MNMK pictures on the right of the internal; please check the values read from the pictures',
+                      'Không có bản nộp trước / file MNMK — đã tạo {n} sheet vải từ ảnh MNMK bên phải CBS nội bộ; hãy kiểm tra các giá trị đọc từ ảnh'),
+    'ocr_check': ('[{sheet}] 사진에서 못 읽었거나 맞지 않는 값: {miss} — 직접 확인/입력 필요',
+                  '[{sheet}] could not read / inconsistent: {miss} — check manually',
+                  '[{sheet}] không đọc được / không khớp: {miss} — kiểm tra thủ công'),
+    'no_panels': ('원단(마커) 시트가 없어요 — 이전 제출본이나 MNMK 파일을 같이 올리거나, Internal 우측에 MNMK 사진을 넣어주세요',
+                  'No fabric (marker) sheets — upload a previous submission or MNMK file, or paste MNMK pictures on the right of the internal',
+                  'Không có sheet vải — tải bản nộp trước hoặc file MNMK, hoặc dán ảnh MNMK bên phải CBS nội bộ'),
+    'fob_gap': ('[{sheet}] 바이어 FOB ${buyer}가 Internal open FOB ${internal}와 {diff} 차이 (허용 ±$0.01 초과) — 아래 매칭 표 확인',
+                '[{sheet}] buyer FOB ${buyer} differs from internal open FOB ${internal} by {diff} (over ±$0.01) — check the matching table',
+                '[{sheet}] FOB buyer ${buyer} lệch {diff} so với FOB nội bộ ${internal} (vượt ±$0.01) — kiểm tra bảng ghép'),
     'shared': ('[{sheet}] {row}행 "{comp}": 같은 원단({match})이 위 행에 이미 들어감 — Internal에 (a+b) 나눔이 없고 이전 CBS도 안 나눠서 0으로 둠',
                '[{sheet}] row {row} "{comp}": same fabric ({match}) already used on an earlier row — Net Usage set to 0, split manually if needed',
                '[{sheet}] dòng {row} "{comp}": cùng vải ({match}) đã dùng ở dòng trên — Net Usage = 0, tự chia nếu cần'),
@@ -283,7 +295,7 @@ with tab_make:
             icon = '🚨' if rep['self_check']['verdict'] != 'lengthwise' else ('⚠️' if rep['warnings'] else '✅')
             with st.expander(f"{icon} {s} — {rep['filename']}"):
                 for w in rep['warnings']:
-                    (st.error if w['code'] == 'not_1pc' else st.warning)(wtxt(w))
+                    (st.error if w['code'] in ('not_1pc', 'fob_gap') else st.warning)(wtxt(w))
                 if rep['self_check']['annotated']:
                     st.image(rep['self_check']['annotated'], width=700,
                              caption=f"Self · {rep['self_check']['sheet']} · {VERD[rep['self_check']['verdict']][LI]}")
@@ -370,6 +382,9 @@ with tab_make:
                     o.update(block_map=bm, sketch=sk, manual=man or o.get('manual'), keep=keep)
                     run_one(s, r['files'])
                     st.rerun()
+                if rep.get('internal_mnmk'):
+                    st.caption('Internal MNMK OCR')
+                    st.dataframe(pd.DataFrame(rep['internal_mnmk']), hide_index=True, use_container_width=True)
                 # panels
                 if rep['panels']:
                     st.markdown(f"**{t('panels')}**")

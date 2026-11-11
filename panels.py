@@ -158,12 +158,15 @@ def build_from_mnmk(dst_wb, layout_ws, title, block, index=None, crop=True):
         ws._images.remove(im)
     f = find_fields(ws, 1, 12)
     for k in ('date', 'width', 'style', 'fab', 'eff', 'size', 'shrink', 'gqty', 'pqty'):
-        set_field(ws, f, k, block[k])
-    set_field(ws, f, 'marker', block['marker_y'])
-    set_field(ws, f, 'marker', block['marker_in'], 2)
+        if block.get(k) is not None:
+            set_field(ws, f, k, block[k])
+    if block.get('marker_y') is not None:
+        set_field(ws, f, 'marker', block['marker_y'])
+    if block.get('marker_in') is not None:
+        set_field(ws, f, 'marker', block['marker_in'], 2)
     # clear YY history values under the 'DATE / SAMPLE STAGE / YY' table
     if block['image'] is not None:
-        data = img_bytes(block['image'])
+        data = block['image'] if isinstance(block['image'], (bytes, bytearray)) else img_bytes(block['image'])
         if crop:
             data, _, size = crop_marker(data)
         else:

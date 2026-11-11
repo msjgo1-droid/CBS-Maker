@@ -58,6 +58,10 @@ def read_internal_block(ws, r0, r1, wsf=None):
     net = find_label(ws, hdr + 1, r1, {'NET'})
     others = find_label(ws, hdr + 1, r1, {'OTHERS'})
     stop = min(x.row for x in (net, others) if x)
+    from cbs_format import profit_labels as _pl
+    _pf = [c.row for c in _pl(ws, hdr + 1, r1).values() if c]
+    if _pf:
+        stop = min(stop, min(_pf))                    # never read Profit/OH/Finance or 'Others' rows as items
     lines, cat, cm, after_cm, cm_row = [], 'fabric', None, False, None
     for r in range(hdr + 1, stop):
         d = _s(ws.cell(r, cols['i_item']).value)
@@ -70,6 +74,11 @@ def read_internal_block(ws, r0, r1, wsf=None):
         if d and after_cm:
             cat = d
         price = _num(ws.cell(r, cols['b_price']).value)
+        lump = False
+        if price is None and (e or d):
+            ttl = _num(ws.cell(r, cols['b_ttl']).value)
+            if ttl and not _s(e).upper().startswith('TTL'):  # e.g. 'Sublimation print' with only TTL $3.00 typed
+                price, lump = ttl, True
         if price is None or not (e or d):
             continue
         nxt = r + 1
@@ -82,9 +91,10 @@ def read_internal_block(ws, r0, r1, wsf=None):
                           item=d, detail=e, remark=_s(ws.cell(r, cols['i_remark']).value),
                           price=price,
                           iyy=_num(ws.cell(r, cols['i_yy']).value) if 'i_yy' in cols else None,
-                          yy=_num(ws.cell(r, cols['b_yy']).value) or 0,
-                          loss=_num(ws.cell(r, cols['b_loss']).value) or 1,
-                          cif=_num(ws.cell(r, cols['b_cif']).value) if 'b_cif' in cols else None,
+                          yy=1 if lump else (_num(ws.cell(r, cols['b_yy']).value) or 0),
+                          loss=1 if lump else (_num(ws.cell(r, cols['b_loss']).value) or 1),
+                          cif=None if lump else (_num(ws.cell(r, cols['b_cif']).value) if 'b_cif' in cols else None),
+                          lump=lump,
                           used=False))
     from cbs_format import profit_labels
     rates = {}
@@ -95,7 +105,15 @@ def read_internal_block(ws, r0, r1, wsf=None):
                 if v is not None and v < 1:
                     rates[key] = v
                     break
-    return dict(lines=lines, cm=cm, rates=rates, cols=cols, cm_row=cm_row)
+    # how the internal rounds each amount (ROUND / ROUNDUP / ROUNDDOWN to cents) -> buyer uses the same
+    rounding = {}
+    if wsf is not None:
+        for key, c in profit_labels(ws, hdr + 1, r1).items():
+            fml = _s(wsf.cell(c.row, cols['b_ttl']).value).upper()
+            m = re.search(r'\b(ROUNDUP|ROUNDDOWN|ROUND)\s*\(', fml)
+            if m:
+                rounding[key] = m.group(1)
+    return dict(lines=lines, cm=cm, rates=rates, cols=cols, cm_row=cm_row, rounding=rounding)
 
 
 # ---------------- buyer side ----------------
@@ -162,7 +180,21 @@ def buyer_rows(ws):
 
 
 def codes(text):
-    return {t for t in re.split(r'[\s/,()#]+', _s(text).upper()) if len(t) >= 5 and re.search(r'\d', t)}
+    return {t for t in re.split(r'[\s/,()#]+', _s(text).upper()) if len(t) >= 5 and re.search(r'\d', t)
+            and not t.startswith('$')}
+
+
+def _line_codes(l):
+    return codes(l['detail']) | codes(l['remark'])
+
+
+def code_overlap(a, b):
+    """'GK37794FW' ~ 'GOLDTEX-GK37794FW', 'PK-42' ~ 'PK-42/03' style matches."""
+    for x in a:
+        for y in b:
+            if x == y or (len(min(x, y, key=len)) >= 6 and (x in y or y in x)):
+                return True
+    return False
 
 
 ALIAS = {'china': 'chinese', 'certification': 'certificate', 'resales': 'resale',
@@ -205,6 +237,12 @@ def match_line(comp, material, buyer_price, buyer_loss, sec, lines, manual=None)
             best, score = ln, sc
     if best and score >= 0.5:
         return best, f'fuzzy {score:.0%}'
+    for ln in free:                                    # 3a) internal item name fully inside component name
+        if not _same_sec(ln, sec):
+            continue
+        iw = {w for w in _words(ln['detail']) if len(w) >= 5}
+        if iw and len(iw & cw) / len(iw) >= 0.5:
+            return ln, 'fuzzy (item)'
     mw = _words(material)                              # 3b) internal item name found in buyer material text
     best, score = None, 0
     for ln in free:
@@ -237,7 +275,7 @@ def _set(ws, r, col, val, changes, sheet):
     c.value = val
 
 
-def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True, prev_splits=None):
+def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True, prev_splits=None, include_minor=False):
     """variant: 'solid'/'heather'/None. manual: {buyer_row: internal_line_index or -1 (skip)}.
     Returns dict(log, changes, unplaced, added)."""
     manual = manual or {}
@@ -252,11 +290,23 @@ def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True, prev_splits
     for r, li in manual.items():
         if li is not None and li >= 0:
             lines[li]['used'] = True
+    # pass 1: material-code matches across the whole sheet first (so a name hit on an earlier row can't steal them)
+    pre = {}
     for r, comp, sec in rows:
-        if other and f'({other})' in comp.lower():
+        if inactive_row(ws, r, c, variant) or (other and f'({other})' in comp.lower()) or r in manual:
+            continue
+        mc = codes(material_text(ws, r, c))
+        ln = next((l for l in lines if not l['used'] and mc and code_overlap(_line_codes(l), mc)), None)
+        if ln:
+            ln['used'] = True
+            pre[r] = ln
+    for r, comp, sec in rows:
+        why = inactive_row(ws, r, c, variant)
+        if (other and f'({other})' in comp.lower()) or why:
             _set(ws, r, c['net'], 0, changes, ws.title)
             _set(ws, r, c['loss'], 0, changes, ws.title)
-            log.append(dict(row=r, component=comp, match='—', how=f'zero ({other})'))
+            _set(ws, r, c['override'], None, changes, ws.title)
+            log.append(dict(row=r, component=comp, match='—', how=f'zero ({why or other})'))
             continue
         if manual.get(r) == -1:
             log.append(dict(row=r, component=comp, match='—', how='skip (manual)'))
@@ -264,10 +314,15 @@ def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True, prev_splits
         bp = _num(ws.cell(r, c['price']).value) or 0
         bl = _num(ws.cell(r, c['loss']).value)
         man = lines[manual[r]] if manual.get(r) is not None and manual[r] >= 0 else None
-        ln, how = match_line(comp, material_text(ws, r, c), bp, bl, sec, lines, man)
+        mc = codes(material_text(ws, r, c))
+        twin = None
+        if r in pre:
+            ln, how = pre[r], 'code'
+        else:
+            twin = next((l for l in lines if l['used'] and mc and code_overlap(_line_codes(l), mc)), None) \
+                if man is None else None
+            ln, how = (None, None) if twin else match_line(comp, material_text(ws, r, c), bp, bl, sec, lines, man)
         if not ln:
-            mc = codes(material_text(ws, r, c))
-            twin = next((l for l in lines if l['used'] and (codes(l['detail']) | codes(l['remark'])) & mc), None)
             if twin and mc:
                 # same fabric already put on another row (e.g. Shell 1 / Contrast 1): usage stays on the first row
                 _set(ws, r, c['net'], 0, changes, ws.title)
@@ -277,6 +332,10 @@ def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True, prev_splits
                 twin.setdefault('rows', []).append(r)
                 continue
             blank = not comp and not (_num(ws.cell(r, c['net']).value) or 0)
+            if not blank:                                  # internal is the truth: no internal item -> no cost
+                _set(ws, r, c['net'], 0, changes, ws.title)
+                _set(ws, r, c['loss'], 0, changes, ws.title)
+                _set(ws, r, c['override'], None, changes, ws.title)
             log.append(dict(row=r, component=comp, match='', how='empty row' if blank else 'NO MATCH'))
             continue
         ln['used'] = True
@@ -308,8 +367,9 @@ def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True, prev_splits
                 l['split'] = src
     # missing rows
     added = []
-    unplaced = [l for l in lines if not l['used'] and l['yy'] and
-                not any(x in (l['detail'] + l['item']).lower() for x in EXCLUDE_ADD)]
+    excluded = [l for l in lines if not l['used'] and l['yy'] and
+                any(x in (l['detail'] + l['item']).lower() for x in EXCLUDE_ADD)]
+    unplaced = [l for l in lines if not l['used'] and l['yy'] and (include_minor or l not in excluded)]
     if add_missing:
         for ln in unplaced:
             r = add_row(ws, ln, c, sections)
@@ -322,7 +382,7 @@ def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True, prev_splits
     # LOP
     rows, sections, lop = buyer_rows(ws)
     set_lop(ws, c, lop or h, blk, changes)
-    return dict(log=log, changes=changes, added=added,
+    return dict(log=log, changes=changes, added=added, excluded=[] if include_minor else excluded,
                 unplaced=[f"{l['cat']} / {l['detail']}" for l in unplaced])
 
 
@@ -348,7 +408,29 @@ def set_lop(ws, c, start, blk, changes):
             al.horizontal = 'right'
             rc.alignment = al
             if mat and lab:
-                _set(ws, r, uc, f'=SUM({L(uc)}{mat}:{L(uc)}{lab})*{L(rate_col)}{r}', changes, ws.title)
+                fx = f'SUM({L(uc)}{mat}:{L(uc)}{lab})*{L(rate_col)}{r}'
+                fn = (blk.get('rounding') or {}).get(key)
+                _set(ws, r, uc, f'={fn}({fx},2)' if fn else f'={fx}', changes, ws.title)
+
+
+def colour_cells(ws, r, c):
+    lo = (c.get('supplier') or c['material']) + 1
+    hi = (c.get('width') or c['uom'] or c['net'])
+    return [_s(ws.cell(r, k).value) for k in range(lo, hi)]
+
+
+def inactive_row(ws, r, c, variant):
+    """Row not used on this sheet: colourways all 'N/A', or heather fabric on the Solid sheet (and vice versa)."""
+    cols_ = colour_cells(ws, r, c)
+    if cols_ and all('N/A' in x.upper() for x in cols_):
+        return 'N/A'
+    mat = material_text(ws, r, c).upper()
+    if variant == 'solid' and 'HEATHER' in mat and not any(x and 'N/A' not in x.upper() for x in cols_):
+        return 'heather row'
+    if variant == 'heather' and 'HEATHER' not in mat and re.search(r'\bSOLID\b', mat) \
+            and not any(x and 'N/A' not in x.upper() for x in cols_):
+        return 'solid row'
+    return None
 
 
 def write_line(ws, r, c, ln, buyer_price, changes, new=False):
@@ -382,6 +464,8 @@ def add_row(ws, ln, c, sections):
         return None
     sr, name = sections[target]
     nxt = sections[target + 1][0] if target + 1 < len(sections) else None
+    if nxt is None:                                   # last section ends at the LOP block
+        nxt = next((r for r in range(sr + 1, ws.max_row + 1) if _s(ws.cell(r, 1).value).lower() == 'lop'), None)
     last = sr
     end = (nxt or ws.max_row)
     for r in range(sr + 1, end):
@@ -415,8 +499,10 @@ def calc_fob(ws):
         mat += round(net * (1 + loss) * (price + fr), 4)
     labor = oh = pf = tr = 0
     rate_col = c['unit'] - 1
+    lrow = {}
     for rr in range(lop or h, ws.max_row + 1):
         a = _s(ws.cell(rr, 1).value).lower()
+        lrow.setdefault(a, rr)
         if a == 'labor':
             labor = _num(ws.cell(rr, c['unit']).value) or 0
         elif a == 'overhead':
@@ -426,7 +512,18 @@ def calc_fob(ws):
         elif a == 'transportation':
             tr = _num(ws.cell(rr, rate_col).value) or 0
     base = mat + labor
-    return round(base * (1 + oh + pf + tr), 6), round(mat, 4)
+    import math
+    def amt(rate, key):
+        f = _s(ws.cell(lrow.get(key, 0), c['unit']).value).upper() if lrow.get(key) else ''
+        v = base * rate
+        if f.startswith('=ROUNDUP('):
+            return math.ceil(round(v * 100, 6)) / 100
+        if f.startswith('=ROUNDDOWN('):
+            return math.floor(round(v * 100, 6)) / 100
+        if f.startswith('=ROUND('):
+            return round(v + 1e-12, 2)
+        return v
+    return round(base + amt(oh, 'overhead') + amt(pf, 'profit') + amt(tr, 'transportation'), 6), round(mat, 4)
 
 
 FOB_FMT = '"$"#,##0.00'
