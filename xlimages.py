@@ -79,3 +79,18 @@ def to_png(data, ext):
             subprocess.run(['convert', src, os.path.join(td, 'img.png')], capture_output=True, timeout=60)
         p = os.path.join(td, 'img.png')
         return open(p, 'rb').read() if os.path.exists(p) else None
+
+
+def recalc_xlsx(data, timeout=180):
+    """Recalculate an xlsx with LibreOffice (fills missing cached formula results). None if not possible."""
+    soffice = shutil.which('soffice') or shutil.which('libreoffice')
+    if not soffice:
+        return None
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, 'in.xlsx')
+        open(src, 'wb').write(data)
+        out = os.path.join(td, 'out')
+        subprocess.run([soffice, '--headless', '--convert-to', 'xlsx:Calc MS Excel 2007 XML', '--outdir', out, src],
+                       capture_output=True, timeout=timeout)
+        p = os.path.join(out, 'in.xlsx')
+        return open(p, 'rb').read() if os.path.exists(p) else None

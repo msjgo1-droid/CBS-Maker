@@ -133,6 +133,9 @@ WARN = {
     'no_panels': ('원단(마커) 시트가 없어요 — 이전 제출본이나 MNMK 파일을 같이 올리거나, Internal 우측에 MNMK 사진을 넣어주세요',
                   'No fabric (marker) sheets — upload a previous submission or MNMK file, or paste MNMK pictures on the right of the internal',
                   'Không có sheet vải — tải bản nộp trước hoặc file MNMK, hoặc dán ảnh MNMK bên phải CBS nội bộ'),
+    'recalc': ('Internal 파일에 계산된 값이 없어서(엑셀에서 저장 안 된 파일) 다시 계산해서 읽었어요 — 가능하면 엑셀에서 한 번 열어 저장한 파일을 올려주세요',
+               'The internal file had no calculated values (never saved in Excel) — recalculated to read it; ideally open & save it in Excel first',
+               'File nội bộ chưa có giá trị tính toán (chưa lưu bằng Excel) — đã tính lại để đọc; nên mở và lưu bằng Excel trước'),
     'basis_prev': ('[{sheet}] 바이어 open을 이전 단계({tab}) 기준으로 만듦: 바이어 ${buyer} / Internal open ${internal} (Internal 파일은 그대로)',
                    '[{sheet}] buyer open built on previous stage ({tab}): buyer ${buyer} / internal open ${internal} (internal file unchanged)',
                    '[{sheet}] Open buyer theo giai đoạn trước ({tab}): buyer ${buyer} / nội bộ ${internal} (file nội bộ giữ nguyên)'),
@@ -151,6 +154,10 @@ WARN = {
     'sketch_conv': ('스케치 이미지({ext}) 변환 실패', 'Sketch picture ({ext}) could not be converted',
                     'Không chuyển đổi được ảnh phác thảo ({ext})'),
 }
+
+
+def money(v):
+    return f'${v:.2f}' if isinstance(v, (int, float)) else '$ -'
 
 
 def wtxt(w):
@@ -347,8 +354,8 @@ with tab_make:
                 # buyer OPEN price basis (internal file itself is never changed)
                 keep = {}
                 for sh, dr in rep.get('drops', {}).items():
-                    st.markdown(f"**{t('basis')}** · [{sh}] `{dr['prev_tab']}` ${dr['prev_fob']:.2f} → "
-                                f"`{rep['internal']['tab']}` ${dr['cur_fob']:.2f}")
+                    st.markdown(f"**{t('basis')}** · [{sh}] `{dr['prev_tab']}` {money(dr['prev_fob'])} → "
+                                f"`{rep['internal']['tab']}` {money(dr['cur_fob'])}")
                     st.caption(t('basis_hint'))
                     cur = (o.get('keep') or {}).get(sh, 'current')
                     opts_ = ['current', 'prev_yy', 'prev_all', 'custom']

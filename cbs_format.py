@@ -365,8 +365,8 @@ def set_cells(data, values, sheet_index=0):
         body = body[:pos] + new + body[pos:]
         start = rm.start(1)
         xml = xml[:start] + body + xml[rm.end(1):]
-    if any(k in ('f', 'n') for k, _, _ in values.values()):
-        # drop cached results of formulas so every app recalculates (values changed underneath them)
+    if any(k == 'n' for k, _, _ in values.values()):
+        # values changed underneath existing formulas -> drop their cached results so every app recalculates
         xml = _re.sub(r'(<f\b[^>]*?(?:/>|>.*?</f>))<v>[^<]*</v>', r'\1', xml, flags=_re.S)
         xml = _re.sub(r'(<c\b[^>]*?)\st="(?:str|e|b)"([^>]*>\s*<f)', r'\1\2', xml)
     wbx = zin.read('xl/workbook.xml').decode('utf8')

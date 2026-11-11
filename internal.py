@@ -80,6 +80,11 @@ def read_internal(path, filename=''):
                 if _s(c.value).upper().startswith('=SUM'):
                     fob, fob_cell = _num(wsv.cell(r, cols['b_ttl']).value), c.coordinate
                     break
+            if fob is None:                      # FOB typed / other formula: last number > 1 under Net
+                for r in range(net.row, min(net.row + 3, r1) + 1):
+                    v = _num(wsv.cell(r, cols['b_ttl']).value)
+                    if v is not None and v > 1:
+                        fob, fob_cell = v, ws.cell(r, cols['b_ttl']).coordinate
         notes = []
         for row in wsv.iter_rows(min_row=r0, max_row=r1, max_col=22):
             for c in row:

@@ -363,16 +363,44 @@ def sync_panels(out, mains, info, warnings):
 
 
 # ---------------- one style = formatted internal + buyer CBS ----------------
+def missing_values(data):
+    """Share of formula cells on the first tab that have no cached result (file saved without calculation)."""
+    wf = openpyxl.load_workbook(io.BytesIO(data))
+    wv = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    a, b = wf.worksheets[0], wv.worksheets[0]
+    n = miss = 0
+    for row in a.iter_rows(max_col=20):
+        for c in row:
+            if isinstance(c.value, str) and c.value.startswith('='):
+                n += 1
+                if b[c.coordinate].value is None:
+                    miss += 1
+    return miss / n if n else 0
+
+
 def process_style(files, today=None, **opts):
     """files: dict(internal=(name,bytes), base=..., prev=..., mnmk=...)."""
     iname, idata = files['internal']
-    kw = dict(internal=idata, internal_name=iname, today=today, **opts)
+    pre_warn = []
+    if missing_values(idata) > 0.3:
+        # internal saved without calculated values (e.g. an app output never opened in Excel) -> recalc to read it
+        from xlimages import recalc_xlsx
+        rc = recalc_xlsx(idata)
+        if rc:
+            calc_for_read = rc
+            pre_warn.append(W('recalc'))
+        else:
+            raise ValueError('Internal CBS has no calculated values — open it in Excel, save, and upload again')
+    else:
+        calc_for_read = idata
+    kw = dict(internal=calc_for_read, internal_name=iname, today=today, **opts)
     for k in ('base', 'prev'):
         if files.get(k):
             kw[k], kw[k + '_name'] = files[k][1], files[k][0]
     if files.get('mnmk'):
         kw['mnmk'] = files['mnmk'][1]
     data, rep = generate(**kw)
+    rep['warnings'] = pre_warn + rep['warnings']
     fmt_bytes, fmt_log = normalize_bytes(idata)
     # record what went to the buyer: "CBS m/d $FOB" right of the open (buyer) FOB of each block used
     d = today or dt.date.today()
@@ -384,7 +412,7 @@ def process_style(files, today=None, **opts):
             col, row = coordinate_from_string(b['fob_cell'])
             ref = f'{get_column_letter(column_index_from_string(col) + 1)}{row}'
             notes[ref] = f"CBS {d.month}/{d.day} ${r['fob']:.2f}"
-    plan, sub_log = subtotal_plan(idata)                   # section subtotals that are missing
+    plan, sub_log = subtotal_plan(calc_for_read)                   # section subtotals that are missing
     cells = dict(plan)
     cells.update({k: ('t', v, None) for k, v in notes.items()})
     if cells:
