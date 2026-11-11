@@ -115,7 +115,7 @@ def place_sketch(ws, png):
 # ---------------- main ----------------
 def generate(internal, internal_name, base=None, base_name='', prev=None, prev_name='', mnmk=None,
              block_map=None, manual=None, crop=True, sketch=0, today=None, keep=None):
-    rep = dict(warnings=[], sheets={}, panels=[], filename='', self_check=None, drops={}, internal_edits={},
+    rep = dict(warnings=[], sheets={}, panels=[], filename='', self_check=None, drops={}, basis={},
                yy_drops={})
     info, wf, wv = read_internal(io.BytesIO(internal), clean_name(internal_name))
     rep['internal'] = info
@@ -179,14 +179,22 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             yd = yy_drops(blk, pblk)
             if yd:
                 rep['yy_drops'][ws.title] = dict(cur_tab=info['tab'], prev_tab=pv[1], rows=yd)
-            if b['fob'] is not None and pv[4] is not None and b['fob'] < pv[4] - 0.005:
+            fell = b['fob'] is not None and pv[4] is not None and b['fob'] < pv[4] - 0.005
+            if rows_:
                 rep['drops'][ws.title] = dict(prev_tab=pv[1], prev_fob=pv[4], cur_fob=b['fob'], rows=rows_,
-                                              block=b['idx'])
+                                              block=b['idx'], fell=fell)
+            if fell:
                 rep['warnings'].append(W('price_drop', sheet=ws.title, tab=pv[1], prev=f'{pv[4]:.2f}',
                                          cur=f"{b['fob']:.2f}"))
+            # buyer open basis: 'current' (internal open as is) / 'prev_yy' / 'prev_all' / {line: [fields]}
             k = (keep or {}).get(ws.title)
+            if isinstance(k, str):
+                k = {r['line']: ([f for f in r['why'] if f == 'yy'] if k == 'prev_yy' else r['why'])
+                     for r in rows_ if k != 'current'}
+                k = {i: f for i, f in k.items() if f}
             if k:
-                rep['internal_edits'].update(keep_previous(blk, pblk, k))
+                keep_previous(blk, pblk, k)          # changes the BUYER side only — the internal file is never touched
+                rep['basis'][ws.title] = dict(prev_tab=pv[1], kept={str(i): f for i, f in k.items()})
         res = fill_sheet(ws, blk, variant_of(ws.title), (manual or {}).get(ws.title), prev_splits=psplit)
         if b['fob'] is not None and res.get('excluded') and abs(calc_fob(ws)[0] - b['fob']) > 0.01:
             # leaving the small interlining out would break the ±$0.01 rule -> put it in
@@ -198,7 +206,11 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
         res['block'] = b['idx']
         res['internal_fob'] = b['fob']
         res['fob'], res['material'] = calc_fob(ws)
-        if b['fob'] is not None and abs(res['fob'] - b['fob']) > 0.01:
+        res['basis'] = 'previous' if ws.title in rep['basis'] else 'internal'
+        if ws.title in rep['basis']:
+            rep['warnings'].insert(0, W('basis_prev', sheet=ws.title, tab=rep['basis'][ws.title]['prev_tab'],
+                                        buyer=f"{res['fob']:.2f}", internal=f"{(b['fob'] or 0):.2f}"))
+        elif b['fob'] is not None and abs(res['fob'] - b['fob']) > 0.01:
             rep['warnings'].insert(0, W('fob_gap', sheet=ws.title, buyer=f"{res['fob']:.4f}", internal=f"{b['fob']:.4f}",
                                         diff=f"{res['fob'] - b['fob']:+.4f}"))
         res['lines'] = [f"{l['cat']} / {l['detail']}" for l in blk['lines']]
@@ -375,7 +387,6 @@ def process_style(files, today=None, **opts):
     plan, sub_log = subtotal_plan(idata)                   # section subtotals that are missing
     cells = dict(plan)
     cells.update({k: ('t', v, None) for k, v in notes.items()})
-    cells.update({k: ('n', v, None) for k, v in rep.get('internal_edits', {}).items()})
     if cells:
         fmt_bytes = set_cells(fmt_bytes, cells)
     rep['cbs_notes'] = notes

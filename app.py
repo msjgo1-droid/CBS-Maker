@@ -63,12 +63,16 @@ T = {
     'blocks': ('Internal 블록 (시트별)', 'Internal block per sheet', 'Block nội bộ cho từng sheet'),
     'sketch': ('바이어 CBS 상단 스케치', 'Header sketch', 'Hình phác thảo ở đầu trang'),
     'match': ('항목 매칭 (수정 가능)', 'Item matching (editable)', 'Ghép hạng mục (có thể sửa)'),
-    'drop': ('📉 이전 단계보다 낮아진 항목 (체크 = 이전 값 유지)', '📉 Items lower than previous stage (tick = keep previous)',
+    'drop': ('📉 이전 단계보다 낮아진 항목', '📉 Items lower than previous stage (tick = keep previous)',
              '📉 Hạng mục thấp hơn giai đoạn trước (tích = giữ giá trị cũ)'),
     'yy_title': ('📉 이전 날짜 탭보다 요척(Internal YY)이 줄어든 항목', '📉 Internal YY lower than the previous-date tab',
                  '📉 Định mức nội bộ (YY) thấp hơn tab ngày trước'),
     'yy_none': ('요척이 줄어든 항목이 없어요.', 'No YY decreases.', 'Không có định mức giảm.'),
     'ok_btn': ('확인', 'OK', 'OK'),
+    'basis': ('💲 바이어 open 가격 기준 선택', '💲 Buyer open price basis', '💲 Chọn cơ sở giá open cho buyer'),
+    'basis_hint': ('Internal 파일의 내부/open 가격은 바뀌지 않아요. 선택한 기준은 바이어 CBS에만 적용돼요 → 고른 뒤 "이 스타일 다시 만들기".',
+                   'The internal file prices never change; the choice only applies to the buyer CBS → then "Re-build this style".',
+                   'Giá trong file nội bộ không đổi; lựa chọn chỉ áp dụng cho CBS buyer → sau đó bấm "Tạo lại style này".'),
     'apply': ('이 스타일 다시 만들기', 'Re-build this style', 'Tạo lại style này'),
     'panels': ('원단(마커) 시트', 'Fabric (marker) sheets', 'Sheet vải (sơ đồ)'),
     'changes': ('변경 내역', 'Changes', 'Thay đổi'),
@@ -87,6 +91,10 @@ T = {
     'col_self': ('Self 1pc/1way', 'Self 1pc/1way', 'Self 1pc/1way'), 'col_warn': ('경고', 'Warnings', 'Cảnh báo'),
 }
 LI = ['KO', 'EN', 'VI'].index(lang)
+BASIS = {'current': ('현재 Internal open 그대로 (기본)', 'Current internal open (default)', 'Giá open nội bộ hiện tại (mặc định)'),
+         'prev_yy': ('YY만 이전 단계 open 유지', 'Keep previous open YY only', 'Giữ YY open giai đoạn trước'),
+         'prev_all': ('낮아진 항목 모두 이전 open 유지', 'Keep previous open for every lower item', 'Giữ open cũ cho mọi hạng mục giảm'),
+         'custom': ('항목별 직접 선택', 'Choose per item', 'Chọn từng hạng mục')}
 t = lambda k: T[k][LI]
 VERD = {'lengthwise': ('lengthwise', 'lengthwise', 'chiều dọc'), 'widthwise': ('widthwise (세로 배치)', 'widthwise', 'chiều ngang'),
         'mixed': ('섞여 있음 (random)', 'mixed / random', 'lẫn lộn'), 'unknown': ('판단 불가 (사진 없음)', 'cannot judge (no picture)', 'không xác định (không có ảnh)')}
@@ -125,6 +133,9 @@ WARN = {
     'no_panels': ('원단(마커) 시트가 없어요 — 이전 제출본이나 MNMK 파일을 같이 올리거나, Internal 우측에 MNMK 사진을 넣어주세요',
                   'No fabric (marker) sheets — upload a previous submission or MNMK file, or paste MNMK pictures on the right of the internal',
                   'Không có sheet vải — tải bản nộp trước hoặc file MNMK, hoặc dán ảnh MNMK bên phải CBS nội bộ'),
+    'basis_prev': ('[{sheet}] 바이어 open을 이전 단계({tab}) 기준으로 만듦: 바이어 ${buyer} / Internal open ${internal} (Internal 파일은 그대로)',
+                   '[{sheet}] buyer open built on previous stage ({tab}): buyer ${buyer} / internal open ${internal} (internal file unchanged)',
+                   '[{sheet}] Open buyer theo giai đoạn trước ({tab}): buyer ${buyer} / nội bộ ${internal} (file nội bộ giữ nguyên)'),
     'fob_gap': ('[{sheet}] 바이어 FOB ${buyer}가 Internal open FOB ${internal}와 {diff} 차이 (허용 ±$0.01 초과) — 아래 매칭 표 확인',
                 '[{sheet}] buyer FOB ${buyer} differs from internal open FOB ${internal} by {diff} (over ±$0.01) — check the matching table',
                 '[{sheet}] FOB buyer ${buyer} lệch {diff} so với FOB nội bộ ${internal} (vượt ±$0.01) — kiểm tra bảng ghép'),
@@ -295,7 +306,8 @@ with tab_make:
             icon = '🚨' if rep['self_check']['verdict'] != 'lengthwise' else ('⚠️' if rep['warnings'] else '✅')
             with st.expander(f"{icon} {s} — {rep['filename']}"):
                 for w in rep['warnings']:
-                    (st.error if w['code'] in ('not_1pc', 'fob_gap') else st.warning)(wtxt(w))
+                    (st.error if w['code'] in ('not_1pc', 'fob_gap') else st.info if w['code'] == 'basis_prev'
+                 else st.warning)(wtxt(w))
                 if rep['self_check']['annotated']:
                     st.image(rep['self_check']['annotated'], width=700,
                              caption=f"Self · {rep['self_check']['sheet']} · {VERD[rep['self_check']['verdict']][LI]}")
@@ -332,32 +344,42 @@ with tab_make:
                 for sh, d in rep.get('yy_drops', {}).items():
                     st.markdown(f"**{t('yy_title')}** · [{sh}] `{d['prev_tab']}` → `{d['cur_tab']}`")
                     st.dataframe(yy_table(d), hide_index=True, use_container_width=True)
-                # open price drop vs previous stage
+                # buyer OPEN price basis (internal file itself is never changed)
                 keep = {}
                 for sh, dr in rep.get('drops', {}).items():
-                    st.markdown(f"**{t('drop')}** · [{sh}] `{dr['prev_tab']}` ${dr['prev_fob']:.2f} → ${dr['cur_fob']:.2f}")
-                    cur_keep = (o.get('keep') or {}).get(sh, {})
+                    st.markdown(f"**{t('basis')}** · [{sh}] `{dr['prev_tab']}` ${dr['prev_fob']:.2f} → "
+                                f"`{rep['internal']['tab']}` ${dr['cur_fob']:.2f}")
+                    st.caption(t('basis_hint'))
+                    cur = (o.get('keep') or {}).get(sh, 'current')
+                    opts_ = ['current', 'prev_yy', 'prev_all', 'custom']
+                    pick = st.radio(sh, opts_, index=opts_.index(cur if isinstance(cur, str) else 'custom'),
+                                    key=f'bs_{s}_{sh}', horizontal=True, label_visibility='collapsed',
+                                    format_func=lambda k: BASIS[k][LI])
                     rows = []
+                    ck = cur if isinstance(cur, dict) else {}
                     for x in dr['rows']:
                         k = x['line']
                         rows.append(dict(line=str(k), item=x['item'], detail=x['detail'][:40], reason=', '.join(x['why']),
                                          previous=', '.join(f"{a}={v:g}" for a, v in x['prev'].items() if v is not None),
                                          now=', '.join(f"{a}={v:g}" for a, v in x['cur'].items() if v is not None),
                                          delta=x['delta'],
-                                         keep_yy='yy' in cur_keep.get(k, []), keep_price='price' in cur_keep.get(k, []),
-                                         keep_loss='loss' in cur_keep.get(k, []), keep_cif='cif' in cur_keep.get(k, []),
-                                         keep_cm='cm' in cur_keep.get(k, [])))
-                    if not rows:
-                        continue
-                    ed = st.data_editor(pd.DataFrame(rows), key=f'dr_{s}_{sh}', hide_index=True, use_container_width=True,
-                                        disabled=['line', 'item', 'detail', 'reason', 'previous', 'now', 'delta'])
-                    kk = {}
-                    for _, x in ed.iterrows():
-                        f = [a for a in ('yy', 'price', 'loss', 'cif', 'cm') if x[f'keep_{a}']]
-                        if f:
-                            kk['CM' if x['line'] == 'CM' else int(x['line'])] = f
-                    if kk:
-                        keep[sh] = kk
+                                         keep_yy='yy' in ck.get(k, []), keep_price='price' in ck.get(k, []),
+                                         keep_loss='loss' in ck.get(k, []), keep_cif='cif' in ck.get(k, []),
+                                         keep_cm='cm' in ck.get(k, [])))
+                    if pick == 'custom':
+                        ed = st.data_editor(pd.DataFrame(rows), key=f'dr_{s}_{sh}', hide_index=True,
+                                            use_container_width=True,
+                                            disabled=['line', 'item', 'detail', 'reason', 'previous', 'now', 'delta'])
+                        kk = {}
+                        for _, x in ed.iterrows():
+                            f = [a for a in ('yy', 'price', 'loss', 'cif', 'cm') if x[f'keep_{a}']]
+                            if f:
+                                kk['CM' if x['line'] == 'CM' else int(x['line'])] = f
+                        keep[sh] = kk or 'current'
+                    else:
+                        st.dataframe(pd.DataFrame(rows).drop(columns=[c for c in rows[0] if c.startswith('keep_')]),
+                                     hide_index=True, use_container_width=True)
+                        keep[sh] = pick
                 # matching
                 st.markdown(f"**{t('match')}**")
                 man = {}
