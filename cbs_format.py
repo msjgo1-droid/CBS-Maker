@@ -9,10 +9,10 @@ Only number formats are changed; values, formulas, colors, layout stay untouched
 import re
 import openpyxl
 
-PRICE4 = '"$"#,##0.00##'          # min 2, max 4 decimals
+PRICE4 = '"$"#,##0.0000'          # always 4 decimals (everything except the final prices)
 PRICE2 = '"$"#,##0.00'
-YY4 = '0.00##'
-LOSS_INT = '0.00##'
+YY4 = '0.0000'
+LOSS_INT = '0.0000'
 PCT0 = '0%'
 PCT2 = '0.00%'
 DATE = 'd-mmm'
