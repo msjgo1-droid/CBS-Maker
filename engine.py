@@ -115,7 +115,7 @@ def place_sketch(ws, png):
 
 # ---------------- main ----------------
 def generate(internal, internal_name, base=None, base_name='', prev=None, prev_name='', mnmk=None,
-             block_map=None, manual=None, crop=True, sketch=0, today=None, keep=None, pics=None):
+             block_map=None, manual=None, crop=True, sketch=0, today=None, keep=None, pics=None, qty=None):
     rep = dict(warnings=[], sheets={}, panels=[], filename='', self_check=None, drops={}, basis={}, pic_choice=[],
                yy_drops={})
     info, wf, wv = read_internal(io.BytesIO(internal), clean_name(internal_name))
@@ -295,7 +295,23 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             rep['warnings'].append(W('no_panels'))
     for p in [s for s in out.worksheets if is_panel_sheet(s)]:
         _clear_layout_junk(p)
+        # values typed in the app for what the MNMK picture could not be read for
+        for k, v in ((qty or {}).get(p.title) or {}).items():
+            f = find_fields(p, 1, 12)
+            if k in f and v not in (None, ''):
+                p.cell(*f[k]).value = (f'{v}"' if k == 'width' and str(v).replace('.', '').isdigit() else v)
     rep['panels'] = sync_panels(out, mains, info, rep['warnings'])
+    # what is still empty on the fabric sheets (asked for in the app, marker length needs Garment Q'ty)
+    rep['warnings'] = [w for w in rep['warnings'] if w.get('code') != 'ocr_check']
+    rep['panel_fields'] = []
+    for p in [s for s in out.worksheets if is_panel_sheet(s)]:
+        f = find_fields(p, 1, 12)
+        vals = {k: p.cell(*f[k]).value if k in f else None for k in ('width', 'eff', 'gqty', 'pqty')}
+        rep['panel_fields'].append(dict(sheet=p.title, **vals))
+        miss = [n for k, n in (('width', 'Width'), ('gqty', "Garment Q'ty"), ('pqty', "Panel Q'ty"))
+                if k in f and vals[k] in (None, '')]
+        if miss:
+            rep['warnings'].append(W('ocr_check', sheet=p.title, miss=', '.join(miss)))
     # fabric (marker) sheets: DATE = the day this CBS is made
     run_day = today or dt.date.today()
     for p in [s for s in out.worksheets if is_panel_sheet(s)]:

@@ -48,6 +48,11 @@ T = {
     'up_prev': ('③ 이전 제출본 (CO 스타일)', '③ Previous submission (CO styles)', '③ Bản đã nộp trước (style CO)'),
     'up_mnmk': ('④ MNMK (YY REQUEST)', '④ MNMK (YY REQUEST)', '④ MNMK (YY REQUEST)'),
     'styles': ('스타일별 파일 묶음', 'Files per style', 'File theo từng style'),
+    'qty_title': ('원단 시트 수량 (MNMK에서 못 읽은 칸 직접 입력)', 'Fabric sheet quantities (type what the MNMK picture could not be read for)',
+                  'Số lượng sheet vải (nhập ô không đọc được từ ảnh MNMK)'),
+    'qty_hint': ("빈칸(Garment Q'ty 등)을 사진 보고 입력한 뒤 아래 '이 스타일 다시 만들기'를 누르면 마커 길이가 계산돼요",
+                 "Fill the blanks (Garment Q'ty etc.) from the picture, then press 'Re-build this style' — the marker length is calculated",
+                 "Nhập các ô trống (Garment Q'ty…) theo ảnh rồi bấm 'Tạo lại style này' — chiều dài sơ đồ sẽ được tính"),
     'reading_mnmk': ('MNMK 사진 읽는 중', 'reading MNMK picture', 'đang đọc ảnh MNMK'),
     'working': ('작업 중…', 'working…', 'đang xử lý…'),
     'run': ('▶ 실행 (Internal 정리 + 바이어 CBS 생성)', '▶ Run (format internal + build buyer CBS)',
@@ -237,7 +242,8 @@ with tab_make:
         o = opts.get(stl, {})
         try:
             data, rep = process_style(g, crop=crop, block_map=o.get('block_map'), manual=o.get('manual'),
-                                      sketch=o.get('sketch', 0), keep=o.get('keep'), pics=o.get('pics'))
+                                      sketch=o.get('sketch', 0), keep=o.get('keep'), pics=o.get('pics'),
+                                      qty=o.get('qty'))
             res[stl] = dict(data=data, rep=rep, files=g)
         except Exception as e:                               # noqa
             res[stl] = dict(error=f'{type(e).__name__}: {e}')
@@ -454,8 +460,32 @@ with tab_make:
                             m[int(x['row'])] = int(str(x['change']).split(':')[0])
                     if m:
                         man[sh] = m
+                # Garment / Panel Q'ty that could not be read from the MNMK picture -> type them here
+                qty = dict(o.get('qty') or {})
+                pf = rep.get('panel_fields') or []
+                if pf:
+                    st.markdown(f"**{t('qty_title')}**")
+                    st.caption(t('qty_hint'))
+                    qdf = pd.DataFrame([{'sheet': x['sheet'], 'Width': str(x['width'] or ''),
+                                         'Efficiency': x['eff'], "Garment Q'ty": x['gqty'], "Panel Q'ty": x['pqty']}
+                                        for x in pf])
+                    qed = st.data_editor(qdf, key=f'qty_{s}', hide_index=True, use_container_width=True,
+                                         disabled=['sheet'],
+                                         column_config={"Garment Q'ty": st.column_config.NumberColumn(min_value=1, step=1),
+                                                        "Panel Q'ty": st.column_config.NumberColumn(min_value=1, step=1)})
+                    for (_, a0), (_, a1) in zip(qdf.iterrows(), qed.iterrows()):
+                        ch = {}
+                        for col, k in (('Width', 'width'), ('Efficiency', 'eff'), ("Garment Q'ty", 'gqty'), ("Panel Q'ty", 'pqty')):
+                            v0, v1 = a0[col], a1[col]
+                            if pd.isna(v1) if not isinstance(v1, str) else v1 == '':
+                                continue
+                            if str(v1) != str(v0):
+                                ch[k] = int(v1) if k in ('gqty', 'pqty') else (float(v1) if k == 'eff' else str(v1).strip())
+                        if ch:
+                            qty[a1['sheet']] = {**qty.get(a1['sheet'], {}), **ch}
                 if st.button(t('apply'), key=f'ap_{s}'):
-                    o.update(block_map=bm, sketch=sk, manual=man or o.get('manual'), keep=keep, pics=pics or o.get('pics'))
+                    o.update(block_map=bm, sketch=sk, manual=man or o.get('manual'), keep=keep, pics=pics or o.get('pics'),
+                             qty=qty or None)
                     run_one(s, r['files'])
                     st.rerun()
                 if rep.get('internal_mnmk'):
