@@ -30,8 +30,8 @@ FABRIC_SECTIONS = {k for k, v in SECTION_KEY.items() if v == 'fabric'}
 
 def cat_key(cat):
     c = _s(cat).lower()
-    for k, v in (('trim', 'trim'), ('embell', 'emb'), ('thread', 'thread'), ('stitch', 'thread'),
-                 ('label', 'label'), ('pack', 'pack')):
+    for k, v in (('pack', 'pack'), ('trim', 'trim'), ('embell', 'emb'), ('thread', 'thread'), ('stitch', 'thread'),
+                 ('label', 'label')):
         if k in c:
             return v
     return 'fabric'

@@ -9,6 +9,7 @@ import streamlit as st
 
 from engine import process_style, group_files, clean_name
 import store as fstore
+import cif as fcif
 
 st.set_page_config(page_title='HOKA CBS Builder', page_icon='🧾', layout='wide')
 
@@ -24,6 +25,23 @@ T = {
               'Tải tất cả file cùng lúc — hệ thống tự nhóm theo mã style (7 số) và mỗi style tạo ra '
               '**CBS nội bộ đã chuẩn hoá + CBS cho buyer**.'),
     'tab_make': ('🧾 CBS 만들기', '🧾 Build CBS', '🧾 Tạo CBS'),
+    'tab_upd': ('🗂 Internal CBS 업데이트', '🗂 Internal CBS update', '🗂 Cập nhật CBS nội bộ'),
+    'upd_intro': ('Internal CBS만 올리세요. 맨 왼쪽(최신) 탭을 이전 단계 탭(날짜가 다른 다음 탭)과 비교해서, 단가·요척·LOSS·CIF·CM이 바뀐 곳을 '
+                  'REMARK 칸에 **빨간 글씨**로 적어요. 기존 REMARK 내용은 그대로 두고 뒤에 이어 적어요. 가격(내부/오픈)은 절대 바꾸지 않아요. '
+                  '숫자 서식·소계 정리와 CIF 확인도 같이 해요.',
+                  'Upload internal CBS only. The leftmost (latest) tab is compared with the previous stage tab (next tab with another date); '
+                  'what changed (price, yy, loss, CIF, CM) is written in the REMARK cell in **red**, after what is already there. '
+                  'Prices (internal/open) are never changed. Number formats, subtotals and CIF check are done too.',
+                  'Chỉ tải CBS nội bộ. Tab ngoài cùng bên trái (mới nhất) được so với tab giai đoạn trước; thay đổi (giá, định mức, '
+                  'hao hụt, CIF, CM) được ghi vào ô REMARK bằng **chữ đỏ**, sau nội dung sẵn có. Giá không bao giờ bị sửa.'),
+    'upd_run': ('▶ 업데이트 실행', '▶ Update', '▶ Cập nhật'),
+    'upd_prev': ('비교한 이전 단계', 'Compared with', 'So với'),
+    'upd_none': ('이전 단계 탭(날짜가 다른 탭)이 없어서 비교하지 못했어요', 'No previous-stage tab (another date) to compare with',
+                 'Không có tab giai đoạn trước để so sánh'),
+    'upd_notes': ('REMARK에 적은 내용', 'Written in REMARK', 'Đã ghi vào REMARK'),
+    'upd_gone': ('이전 단계에는 있었는데 지금 없는 항목', 'Items in the previous stage that are gone now', 'Mục có ở giai đoạn trước nhưng nay không còn'),
+    'upd_same': ('이전 단계와 바뀐 것이 없어요', 'Nothing changed vs the previous stage', 'Không có thay đổi so với giai đoạn trước'),
+    'upd_skip': ('REMARK가 수식이라 적지 않은 곳', 'REMARK is a formula — not written', 'REMARK là công thức — không ghi'),
     'tab_hist': ('📊 FOB 기록', '📊 FOB history', '📊 Lịch sử FOB'),
     'save_hist': ('💾 이 결과를 FOB 기록에 저장', '💾 Save these results to FOB history', '💾 Lưu kết quả vào lịch sử FOB'),
     'saved': ('저장 완료: 새로 {a}건, 갱신 {r}건', 'Saved: {a} new, {r} updated', 'Đã lưu: {a} mới, {r} cập nhật'),
@@ -48,6 +66,20 @@ T = {
     'up_prev': ('③ 이전 제출본 (CO 스타일)', '③ Previous submission (CO styles)', '③ Bản đã nộp trước (style CO)'),
     'up_mnmk': ('④ MNMK (YY REQUEST)', '④ MNMK (YY REQUEST)', '④ MNMK (YY REQUEST)'),
     'styles': ('스타일별 파일 묶음', 'Files per style', 'File theo từng style'),
+    'cif_bad': ('Internal CIF 확인 필요 — 지금까지 다른 스타일에 같은 품목으로 넣은 CIF와 달라요',
+                'Check the internal CIF — different from what other styles used for the same kind of item',
+                'Kiểm tra CIF nội bộ — khác với CIF các style khác dùng cho cùng loại hàng'),
+    'cif_type': ('품목 종류', 'Item type', 'Loại hàng'),
+    'cif_usual': ('다른 스타일 (값×건수)', 'Other styles (value×count)', 'Style khác (giá trị×số lần)'),
+    'cif_why': ('이유', 'Why', 'Lý do'),
+    'cif_missing': ('CIF 빠짐', 'CIF missing', 'Thiếu CIF'),
+    'cif_differs': ('같은 품목과 다름', 'Differs from the same item', 'Khác cùng loại hàng'),
+    'cif_high': ('평소보다 높음', 'Higher than usual', 'Cao hơn thường lệ'),
+    'cif_low': ('평소보다 낮음', 'Lower than usual', 'Thấp hơn thường lệ'),
+    'cif_hist': ('CIF 기록 (Internal CBS)', 'CIF records (internal CBS)', 'Lịch sử CIF (CBS nội bộ)'),
+    'cif_hist_hint': ('CBS를 만들 때마다 Internal의 CIF가 자동 저장돼요. 예전 Internal 파일을 여기 올려서 기록에 추가할 수도 있어요.',
+                      'Every run saves the internal CIF automatically. You can also add old internal files here.',
+                      'Mỗi lần chạy CIF nội bộ được lưu tự động. Có thể thêm file nội bộ cũ ở đây.'),
     'qty_title': ('원단 시트 수량 (MNMK에서 못 읽은 칸 직접 입력)', 'Fabric sheet quantities (type what the MNMK picture could not be read for)',
                   'Số lượng sheet vải (nhập ô không đọc được từ ảnh MNMK)'),
     'qty_hint': ("빈칸(Garment Q'ty 등)을 사진 보고 입력한 뒤 아래 '이 스타일 다시 만들기'를 누르면 마커 길이가 계산돼요",
@@ -144,6 +176,13 @@ WARN = {
     'split_part': ('[{sheet}] 같은 원단의 다른 부위 MNMK — 내부 요척 {part} × 오픈 LOSS 비율 = {yy} 로 계산, 메인 시트는 나머지(오픈 요척 − 이 값)',
                    '[{sheet}] second MNMK of the same fabric — internal yy {part} × open loss ratio = {yy}; the main sheet takes the rest (open yy − this)',
                    '[{sheet}] MNMK thứ hai của cùng loại vải — định mức nội bộ {part} × tỉ lệ hao hụt open = {yy}; sheet chính lấy phần còn lại'),
+    'old_files': ('GitHub의 앱 파일 버전이 서로 달라요 — zip 안의 모든 .py 파일을 같이 덮어쓰고 Reboot 해주세요',
+                  'App files on GitHub are from different versions — overwrite ALL .py files from the zip and reboot',
+                  'Các file app trên GitHub khác phiên bản — ghi đè TẤT CẢ file .py trong zip rồi Reboot'),
+    'cif_bad': ('Internal CIF {n}곳이 다른 스타일의 같은 품목 CIF와 달라요 — Internal 파일에 빨간색으로 표시하고 옆에 보통 값을 적었어요',
+                'Internal CIF differs from the same kind of item in other styles at {n} place(s) — marked red in the internal file with the usual value next to it',
+                'CIF nội bộ khác cùng loại hàng ở style khác tại {n} chỗ — đã tô đỏ trong file nội bộ và ghi giá trị thường dùng bên cạnh'),
+    'cif_err': ('CIF 확인 중 오류: {err}', 'CIF check failed: {err}', 'Lỗi kiểm tra CIF: {err}'),
     'sum_fixed': ('[{sheet}] 템플릿 합계 수식이 다른 열(A열 등)을 가리키고 있어서 Unit Price 열로 고쳤어요 ({n}곳) — 안 고치면 FOB가 0으로 나와요',
                   '[{sheet}] template SUM formulas pointed at the wrong column (e.g. A) — re-pointed {n} of them to Unit Price (otherwise FOB shows 0)',
                   '[{sheet}] công thức tổng của template trỏ sai cột (vd. cột A) — đã sửa {n} chỗ về cột Unit Price (nếu không FOB = 0)'),
@@ -199,7 +238,17 @@ def _secrets():
 
 
 st.title(t('title'))
-tab_make, tab_hist = st.tabs([t('tab_make'), t('tab_hist')])
+tab_make, tab_upd, tab_hist = st.tabs([t('tab_make'), t('tab_upd'), t('tab_hist')])
+
+def cif_history(reload=False):
+    """CIF records saved by earlier runs (the engine adds the starter set shipped with the app)."""
+    if reload or 'cif_hist' not in st.session_state:
+        try:
+            st.session_state['cif_hist'] = fcif.CifStore(_secrets()).load()
+        except Exception:                                    # noqa
+            st.session_state['cif_hist'] = pd.DataFrame(columns=fcif.COLS)
+    return st.session_state['cif_hist']
+
 
 with tab_make:
     st.markdown(t('intro'))
@@ -241,9 +290,17 @@ with tab_make:
             return
         o = opts.get(stl, {})
         try:
-            data, rep = process_style(g, crop=crop, block_map=o.get('block_map'), manual=o.get('manual'),
-                                      sketch=o.get('sketch', 0), keep=o.get('keep'), pics=o.get('pics'),
-                                      qty=o.get('qty'))
+            kw = dict(crop=crop, block_map=o.get('block_map'), manual=o.get('manual'),
+                      sketch=o.get('sketch', 0), keep=o.get('keep'), pics=o.get('pics'), qty=o.get('qty'),
+                      cif_hist=cif_history())
+            import inspect as _insp
+            import engine as _eng
+            ok = set(_insp.signature(_eng.generate).parameters)
+            # app.py and engine.py from different versions (only some files updated on GitHub) -> don't crash
+            kw = {k: v for k, v in kw.items() if k in ok or k == 'crop' or (k == 'cif_hist' and hasattr(_eng, 'cif_marks'))}
+            data, rep = process_style(g, **kw)
+            if 'qty' not in ok:
+                rep['warnings'].append(dict(code='old_files'))
             res[stl] = dict(data=data, rep=rep, files=g)
         except Exception as e:                               # noqa
             res[stl] = dict(error=f'{type(e).__name__}: {e}')
@@ -281,6 +338,13 @@ with tab_make:
             run_one(stl, g)
         _im.PROGRESS = None
         bar.progress(1.0, text=f"done · {int(_time.time() - t0)}s")
+        allrecs = [x for r_ in res.values() for x in (r_.get('rep') or {}).get('cif_recs') or []]
+        if allrecs:
+            try:
+                fcif.CifStore(_secrets()).upsert(allrecs)        # every internal CIF is kept for later checks
+                cif_history(reload=True)
+            except Exception as e:                           # noqa
+                st.caption(f'CIF history not saved: {type(e).__name__}: {e}')
 
     if res and st.session_state.pop('yy_popup', False) and any(
             (r.get('rep') or {}).get('yy_drops') for r in res.values()):
@@ -312,6 +376,7 @@ with tab_make:
                           t('col_self'): '✅' if sc['verdict'] == 'lengthwise' else '🚨 ' + VERD[sc['verdict']][LI],
                           '📉': '📉' if rep.get('drops') else '',
                           'YY↓': sum(len(d['rows']) for d in rep.get('yy_drops', {}).values()) or 0,
+                          'CIF⚠': len(rep.get('cif_issues') or []),
                           t('col_warn'): len(rep['warnings']), t('fname'): rep['filename']})
         st.dataframe(pd.DataFrame(srows), hide_index=True, use_container_width=True)
 
@@ -348,6 +413,12 @@ with tab_make:
                 for w in rep['warnings']:
                     (st.error if w['code'] in ('not_1pc', 'fob_gap') else st.info if w['code'] == 'basis_prev'
                  else st.warning)(wtxt(w))
+                if rep.get('cif_issues'):
+                    st.error(t('cif_bad'))
+                    st.dataframe(pd.DataFrame([{t('cif_type'): x['type'], 'Item': x['detail'], 'Price': x.get('price'),
+                                                'CIF': x['cif'], t('cif_usual'): x['seen'],
+                                                t('cif_why'): t('cif_' + x['why'])} for x in rep['cif_issues']]),
+                                 hide_index=True, use_container_width=True)
                 if rep['self_check']['annotated']:
                     st.image(rep['self_check']['annotated'], width=700,
                              caption=f"Self · {rep['self_check']['sheet']} · {VERD[rep['self_check']['verdict']][LI]}")
@@ -503,6 +574,62 @@ with tab_make:
                                  hide_index=True, use_container_width=True)
 
 
+# ======================= INTERNAL CBS UPDATE =======================
+with tab_upd:
+    import history_update as hupd
+    st.markdown(t('upd_intro'))
+    ups = st.file_uploader('Internal CBS', type=['xlsx'], accept_multiple_files=True, key='upd_files')
+    ures = st.session_state.setdefault('upd_res', {})
+    if ups and st.button(t('upd_run'), type='primary', use_container_width=True, key='upd_go'):
+        ures.clear()
+        bar_u = st.progress(0.0)
+        for k_, f_ in enumerate(ups):
+            bar_u.progress(k_ / len(ups), text=f_.name)
+            try:
+                out_, rep_ = hupd.update(f_.getvalue(), clean_name(f_.name))
+                ures[f_.name] = dict(data=out_, rep=rep_)
+            except Exception as e:                           # noqa
+                ures[f_.name] = dict(error=f'{type(e).__name__}: {e}')
+        bar_u.progress(1.0, text='done')
+    if ures:
+        zb = io.BytesIO()
+        with zipfile.ZipFile(zb, 'w', zipfile.ZIP_DEFLATED) as z:
+            for n_, r_ in ures.items():
+                if 'data' in r_:
+                    z.writestr(r_['rep']['filename'], r_['data'])
+        st.download_button(t('dl_all'), zb.getvalue(), file_name=f'HOKA_internal_{dt.date.today():%m%d%Y}.zip',
+                           type='primary', use_container_width=True, key='upd_zip')
+        for n_, r_ in ures.items():
+            if 'error' in r_:
+                st.error(f'{n_}: {r_["error"]}')
+                continue
+            rp = r_['rep']
+            icon = '🔴' if rp['notes'] or rp['cif_issues'] else '✅'
+            with st.expander(f"{icon} {rp['filename']} — {rp['tab']}", expanded=len(ures) == 1):
+                for b_ in rp['blocks']:
+                    if b_['prev']:
+                        st.write(f"**{b_['variant']}** · {t('upd_prev')}: `{b_['prev']}`")
+                    else:
+                        st.warning(f"{b_['variant']} · {t('upd_none')}")
+                    if b_['gone']:
+                        st.warning(t('upd_gone') + ': ' + ', '.join(b_['gone']))
+                if rp['notes']:
+                    st.markdown(f"**{t('upd_notes')}**")
+                    st.dataframe(pd.DataFrame([{'': x['variant'], 'Cell': x['cell'], 'Item': x['item'],
+                                                'REMARK (before)': x['before'], '🔴 +': x['note']} for x in rp['notes']]),
+                                 hide_index=True, use_container_width=True)
+                elif any(b_['prev'] for b_ in rp['blocks']):
+                    st.success(t('upd_same'))
+                if rp['skipped']:
+                    st.caption(t('upd_skip') + ': ' + ', '.join(c for c, _ in rp['skipped']))
+                if rp['cif_issues']:
+                    st.error(t('cif_bad'))
+                    st.dataframe(pd.DataFrame([{t('cif_type'): x['type'], 'Item': x['detail'], 'Price': x.get('price'),
+                                                'CIF': x['cif'], t('cif_usual'): x['seen'],
+                                                t('cif_why'): t('cif_' + x['why'])} for x in rp['cif_issues']]),
+                                 hide_index=True, use_container_width=True)
+                st.download_button('⬇️ ' + rp['filename'], r_['data'], file_name=rp['filename'], key=f'upd_dl_{n_}')
+
 # ======================= FOB HISTORY =======================
 with tab_hist:
     stor = fstore.Store(_secrets())
@@ -570,3 +697,4 @@ with tab_hist:
             st.bar_chart(ch.pivot_table(index='label', columns='step', values='fob', aggfunc='last'), stack=False)
             st.download_button(t('dl_xlsx'), fstore.report_xlsx(view),
                                file_name=f"HOKA_FOB_{'_'.join(sel_s)}_{'_'.join(sel_g)}.xlsx")
+

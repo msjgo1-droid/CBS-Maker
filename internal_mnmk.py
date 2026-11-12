@@ -91,6 +91,19 @@ def _qty_boxes(pytesseract, im, S=3):
     words = [(w.strip(), d['left'][i], d['top'][i], d['width'][i], d['height'][i])
              for i, w in enumerate(d['text']) if w.strip()]
     out = ''
+    # TOTAL MARKER LENGTH | 3 | Y | 35.05 | IN  -> the yards digit is often lost in the whole-picture read
+    for w, x, y, ww, h in words:
+        if re.search(r'TOTAL', w, re.I):
+            band = big.crop((x, max(0, y - h), big.width, y + 2 * h))
+            a = np.asarray(band).copy()
+            a[:, (a < 100).mean(axis=0) > 0.6] = 255
+            a[(a < 100).mean(axis=1) > 0.5, :] = 255
+            for psm in (6, 7):
+                t = pytesseract.image_to_string(Image.fromarray(a), config=f'--psm {psm}')
+                m = re.search(r'(\d{1,2})\s*[|\]\[]?\s*Y\b\W*(\d{1,2}\.\d{1,3})', t)
+                if m:
+                    out += f'\n@@LN@@ {m.group(1)} {m.group(2)}'
+            break
     for w, x, y, ww, h in words:
         if not re.search(r'GARM', w, re.I):
             continue
@@ -134,6 +147,12 @@ def _ct_boxes(pytesseract, band0):
     return out
 
 
+def _ln_vote(t):
+    from collections import Counter
+    c = Counter(int(y) for y, _ in re.findall(r'@@LN@@ (\d{1,2}) (\d{1,2}\.\d{1,3})', t or ''))
+    return c.most_common(1)[0][0] if c else None
+
+
 def _vote(t, lab):
     from collections import Counter
     c = Counter(int(v) for v in re.findall(r'@@%s@@ (\d{1,4})' % lab, t or '') if int(v) > 0)
@@ -152,6 +171,7 @@ def parse_fields(text):
         gqty=_vote(t, 'GQ') or g(r"GARMENT\s*Q.?TY[\s\[|(]{0,4}(\d{1,3})(?![\d.])", int),
         yy=g(r'(\d\.\d{3})\s*[\]}|]?\s*(?:Panel|\n)', float),
         inch=g(r'(\d{1,2}\.\d{2})\s*IN\b', float),
+        marker_y_read=_ln_vote(t),
         shrink=g(r'L\s*[:;]\s*(\d{1,2})\s*%', int),
     )
     if not out['gqty']:                                      # qty printed just before the red yy
@@ -216,7 +236,10 @@ def marker_solutions(f, yy_hint=None):
             y = round(yy * q - inch / 36)
             if y >= 0:
                 sols.append((abs((y + inch / 36) / q - yy) / yy, q, y, inch))
-    return [x for x in sols if x[0] < 0.03]
+    sols = [x for x in sols if x[0] < 0.03]
+    if f.get('marker_y_read') is not None and any(x[2] == f['marker_y_read'] for x in sols):
+        sols = [x for x in sols if x[2] == f['marker_y_read']]      # yards read in TOTAL MARKER row
+    return sols
 
 
 def solve_marker(f, yy_hint=None, ref_qty=None):
@@ -340,6 +363,15 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
         ln = xs[0]['_line']
         xs.sort(key=lambda x: x['_row'])
         parts = list((ln or {}).get('parts') or [])
+        ys = [x['fields'].get('yy') for x in xs]
+        iyy = (ln or {}).get('iyy')
+        sums = iyy and all(ys) and abs(sum(ys) - iyy) <= 0.03 * iyy + 0.002
+        if not (len(parts) == len(xs) or sums):
+            # not a split of one fabric (e.g. solid PK-42/03 0.166 and heather RF-5901 0.134 stacked):
+            # keep the top picture only
+            for x in xs[1:]:
+                x['_drop'] = True
+            continue
         # a yy read from the picture claims its part; pictures without one take what is left
         left = list(parts)
         for x in xs:
@@ -372,7 +404,7 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
             x['part_main'] = k == 0
     order = []
     for xs in groups.values():
-        order += xs
+        order += [x for x in xs if not x.get('_drop')]
     out[:] = order
     # garment Q'ty: the marker whose reading is unambiguous sets the reference for the others
     ref = None

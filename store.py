@@ -108,7 +108,16 @@ def _types(df):
             df[c] = None
     df['fob'] = pd.to_numeric(df['fob'], errors='coerce')
     df['style'] = df['style'].astype(str)
+    # records saved before PRINT was recognised: file name with PRT -> PRINT
+    prt = df['file'].fillna('').map(is_print) & df['color'].fillna('').isin(['SOLID', 'HEATHER'])
+    df.loc[prt, 'color'] = df.loc[prt, 'color'].map(lambda c: 'PRINT' if c == 'SOLID' else 'HEATHER PRINT')
     return df[COLS]
+
+
+def is_print(name):
+    """HOKA file names mark printed styles with PRT (e.g. ...CapacityShortLPRT_S28..., ..._PRT_...)."""
+    base = re.sub(r'\.xlsx?$', '', os.path.basename(str(name or '')), flags=re.I)
+    return bool(re.search(r'PRT|PRINT', base))
 
 
 # ---------------- reading buyer CBS files ----------------
@@ -147,11 +156,12 @@ def parse_name(name):
     return out
 
 
-def color_of(title, ws=None):
+def color_of(title, ws=None, name=None):
     t = title.lower()
-    if 'heather' in t and 'solid' not in t:
-        return 'HEATHER'
-    return 'SOLID'
+    c = 'HEATHER' if 'heather' in t and 'solid' not in t else 'SOLID'
+    if 'print' in t or (name and is_print(name)):
+        c = 'PRINT' if c == 'SOLID' else 'HEATHER PRINT'
+    return c
 
 
 def records_from_buyer_file(name, data, fobs=None):
@@ -178,7 +188,7 @@ def records_from_buyer_file(name, data, fobs=None):
         stage = info['stage'] or _s(vs['B5'].value).upper()
         from internal import find_style
         style = info['style'] or find_style(vs['B1'].value) or ''
-        recs.append(dict(season=season, stage=stage, style=style, color=color_of(ws.title),
+        recs.append(dict(season=season, stage=stage, style=style, color=color_of(ws.title, name=name),
                          fob=round(float(fob), 2), date=info['date'] or dt.date.today().isoformat(),
                          file=re.sub(r'^[0-9a-f]{8}-', '', os.path.basename(name))))
     return recs

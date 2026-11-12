@@ -11,7 +11,7 @@ from PIL import Image
 from internal import read_internal, gender_of, previous_stage_block, find_style
 from cbs_fill import (code_overlap, yy_drops, price_drops, keep_previous, prev_split_map, FABRIC_SECTIONS, material_text, read_internal_block, fill_sheet, is_main_sheet, buyer_columns, buyer_rows, calc_fob,
                       format_fob, _norm, _s)
-from cbs_format import normalize_bytes, set_cells, subtotal_plan
+from cbs_format import normalize_bytes, set_cells, subtotal_plan, highlight_cells
 from panels import (is_panel_sheet, read_mnmk, pick_block, build_from_mnmk, recompute_marker,
                     panel_yy, panel_codes, find_fields, one_pc_one_way, crop_marker)
 from xlimages import pictures, to_png
@@ -173,6 +173,11 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
     for ws in mains:
         b = info['blocks'][bmap[ws.title]]
         blk = read_internal_block(wsv, b['r0'], b['r1'], wf.worksheets[0])
+        rep.setdefault('cif_lines', []).extend(
+            dict(block=('heather' if b.get('heather') else 'solid'), tab=info.get('tab'), row=l['row'], key=l['key'],
+                 cat=l['cat'], item=l['item'], detail=l['detail'], price=l['price'], cif=l['cif'], yy=l['yy'],
+                 cif_col=blk['cols'].get('b_cif'), note_col=(blk['cols'].get('b_ttl') or 0) + 1)
+            for l in blk['lines'] if not l['lump'] and l['yy'])      # internal CIF as typed (record + sanity check)
         pv = previous_stage_block(wv, b['heather'])
         if pv:
             pblk = read_internal_block(wv.worksheets[pv[0]], pv[2], pv[3])
@@ -570,6 +575,7 @@ def process_style(files, today=None, **opts):
             kw[k], kw[k + '_name'] = files[k][1], files[k][0]
     if files.get('mnmk'):
         kw['mnmk'] = files['mnmk'][1]
+    cif_hist = kw.pop('cif_hist', None)
     data, rep = generate(**kw)
     rep['warnings'] = pre_warn + rep['warnings']
     fmt_bytes, fmt_log = normalize_bytes(idata)
@@ -586,13 +592,69 @@ def process_style(files, today=None, **opts):
     plan, sub_log = subtotal_plan(calc_for_read)                   # section subtotals that are missing
     cells = dict(plan)
     cells.update({k: ('t', v, None) for k, v in notes.items()})
+    # CIF that does not look like what is used for that kind of item (history of all internal CBS)
+    marks = []
+    try:
+        marks = cif_marks(rep, iname, calc_for_read, cif_hist)
+    except Exception as ex:                                      # noqa - never stop a CBS for this
+        rep['warnings'].append(W('cif_err', err=f'{type(ex).__name__}: {ex}'))
+    for m in marks:
+        if m['note_ref'] and m['note_ref'] not in cells:
+            cells[m['note_ref']] = ('t', m['note'], None)
+        if m['empty']:
+            cells.setdefault(m['ref'], ('t', '', None))
     if cells:
         fmt_bytes = set_cells(fmt_bytes, cells)
+    if marks:
+        fmt_bytes = highlight_cells(fmt_bytes, [m['ref'] for m in marks])
     rep['cbs_notes'] = notes
     rep['subtotals_added'] = sub_log
     rep['internal_formatted'] = (clean_name(iname), fmt_bytes)
     rep['format_log'] = fmt_log
     return data, rep
+
+
+def cif_history(extra=None):
+    """CIF of the internal CBS seen so far: starter set shipped with the app + records saved by the app."""
+    import pandas as pd
+    import cif as fcif
+    p = os.path.join(HERE, 'assets', 'cif_seed.csv')
+    h = pd.read_csv(p, dtype=str).pipe(fcif._types) if os.path.exists(p) else pd.DataFrame(columns=fcif.COLS)
+    if extra is not None and len(extra):
+        h = h[~h['style'].astype(str).isin(set(extra['style'].astype(str)))]
+        h = pd.concat([h, extra], ignore_index=True)
+    return h
+
+
+def cif_marks(rep, iname, calc_bytes, extra_hist=None):
+    """Internal CIF cells to flag: compared with the CIF other styles used for the same kind of item.
+    Sets rep['cif_issues'] / rep['cif_recs']; returns [{ref, note_ref, note, empty}]."""
+    import cif as fcif
+    from openpyxl.utils import get_column_letter
+    lines = rep.get('cif_lines') or []
+    style = find_style(clean_name(iname)) or ''
+    recs = fcif.records(style, fcif.fstore.season_code(clean_name(iname)) or '', clean_name(iname), lines)
+    rep['cif_recs'] = recs
+    issues = fcif.check(recs, cif_history(extra_hist))
+    rep['cif_issues'] = issues
+    if not issues:
+        return []
+    wv = openpyxl.load_workbook(io.BytesIO(calc_bytes), data_only=True).worksheets[0]
+    out = []
+    for x in issues:
+        for l in lines:
+            if (l['detail'] or '').strip() != (x['detail'] or '').strip() or (l['cif'] or 0) != (x['cif'] or 0) \
+                    or not l.get('cif_col'):
+                continue
+            ref = f"{get_column_letter(l['cif_col'])}{l['row']}"
+            nref = f"{get_column_letter(l['note_col'])}{l['row']}" if l.get('note_col', 1) > 1 else None
+            if nref and wv[nref].value not in (None, ''):
+                nref = None                                     # never overwrite a remark
+            why = {'missing': 'CIF 빠짐', 'differs': 'CIF 확인', 'high': 'CIF 높음', 'low': 'CIF 낮음'}[x['why']]
+            out.append(dict(ref=ref, note_ref=nref, empty=not l['cif'],
+                            note=f"⚠ {why}: {x['cif'] or 0:g} → 보통 {x['usual']:g} (다른 스타일 {x['seen']})"))
+    rep['warnings'].append(W('cif_bad', n=len(issues)))
+    return out
 
 
 # ---------------- batch grouping ----------------

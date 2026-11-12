@@ -340,6 +340,15 @@ def set_cells(data, values, sheet_index=0):
             cell = f'<c r="{ref}"{{s}}><f>{_esc(text)}</f></c>'
         elif kind == 'n':
             cell = f'<c r="{ref}"{{s}}><v>{float(text)!r}</v></c>'
+        elif kind == 'r':
+            # rich text: keep the existing text as it is, add the new part in red
+            old_t, new_t, fname, sz = text
+            rpr = '<rPr>' + (f'<sz val="{sz}"/>' if sz else '') + '<color rgb="FFFF0000"/>' + \
+                (f'<rFont val="{_esc(fname)}"/>' if fname else '') + '</rPr>'
+            rpr0 = '<rPr>' + (f'<sz val="{sz}"/>' if sz else '') + (f'<rFont val="{_esc(fname)}"/>' if fname else '') + '</rPr>'
+            runs = (f'<r>{rpr0}<t xml:space="preserve">{_esc(old_t)}</t></r>' if old_t else '') + \
+                f'<r>{rpr}<t xml:space="preserve">{_esc(new_t)}</t></r>'
+            cell = f'<c r="{ref}"{{s}} t="inlineStr"><is>{runs}</is></c>'
         else:
             cell = f'<c r="{ref}"{{s}} t="inlineStr"><is><t xml:space="preserve">{_esc(text)}</t></is></c>'
         st_ = style_of(style_ref) if style_ref else None
@@ -461,3 +470,56 @@ def subtotal_plan(data, sheet_index=0):
             plan[ref] = ('f', f'SUM({tcol}{pf[0]}:{tcol}{pf[-1]})', style_ref or f'{tcol}{pf[-1]}')
             log.append(f'  + subtotal Profit/OH/Finance -> {ref}')
     return plan, log
+
+
+def highlight_cells(data, refs, rgb='FFFF7C80', sheet_index=0):
+    """Give cells a solid fill (value, number format, borders untouched) by patching styles.xml + sheet XML."""
+    if not refs:
+        return data
+    zin = _zip.ZipFile(_io.BytesIO(data))
+    path = _sheet_paths(zin)[sheet_index]
+    styles = zin.read('xl/styles.xml').decode('utf8')
+    fm = _re.search(r'<fills[^>]*>(.*?)</fills>', styles, _re.S)
+    nf = len(_re.findall(r'<fill>|<fill\s', fm.group(1)))
+    fill = f'<fill><patternFill patternType="solid"><fgColor rgb="{rgb}"/><bgColor indexed="64"/></patternFill></fill>'
+    styles = styles[:fm.start()] + _re.sub(r'count="\d+"', f'count="{nf + 1}"', styles[fm.start():fm.start(1)], count=1) + \
+        fm.group(1) + fill + '</fills>' + styles[fm.end():]
+    m = _re.search(r'<cellXfs[^>]*>(.*?)</cellXfs>', styles, _re.S)
+    xfs = _re.findall(r'<xf\b[^>]*/>|<xf\b[^>]*>.*?</xf>', m.group(1), _re.S)
+    added, cache = [], {}
+
+    def new_style(s):
+        if s in cache:
+            return cache[s]
+        x = xfs[s]
+        x2 = _re.sub(r'fillId="\d+"', f'fillId="{nf}"', x, count=1) if 'fillId=' in x else x.replace('<xf ', f'<xf fillId="{nf}" ', 1)
+        x2 = _re.sub(r'applyFill="\w+"', 'applyFill="1"', x2) if 'applyFill=' in x2 else x2.replace('<xf ', '<xf applyFill="1" ', 1)
+        added.append(x2)
+        cache[s] = len(xfs) + len(added) - 1
+        return cache[s]
+    xml = zin.read(path).decode('utf8')
+    want = set(refs)
+
+    def rep(mm):
+        tag, ref = mm.group(0), mm.group(1)
+        if ref not in want:
+            return tag
+        sm = _re.search(r'\ss="(\d+)"', tag)
+        ns = new_style(int(sm.group(1)) if sm else 0)
+        return _re.sub(r'\ss="\d+"', f' s="{ns}"', tag) if sm else tag.replace(f'r="{ref}"', f'r="{ref}" s="{ns}"')
+    xml = _re.sub(r'<c r="([A-Z]+\d+)"[^>]*?>', rep, xml)
+    if added:
+        m = _re.search(r'<cellXfs[^>]*>(.*?)</cellXfs>', styles, _re.S)
+        total = len(xfs) + len(added)
+        head = _re.sub(r'count="\d+"', f'count="{total}"', styles[m.start():m.start(1)], count=1)
+        styles = styles[:m.start()] + head + m.group(1) + ''.join(added) + '</cellXfs>' + styles[m.end():]
+    out = _io.BytesIO()
+    with _zip.ZipFile(out, 'w', _zip.ZIP_DEFLATED) as zo:
+        for it in zin.infolist():
+            if it.filename == 'xl/styles.xml':
+                zo.writestr(it, styles)
+            elif it.filename == path:
+                zo.writestr(it, xml)
+            else:
+                zo.writestr(it, zin.read(it.filename))
+    return out.getvalue()
