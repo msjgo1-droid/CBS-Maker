@@ -28,7 +28,8 @@ def W(code, **kw):
 
 
 def clean_name(n):
-    return re.sub(r'^[0-9a-f]{8}-', '', os.path.basename(n or ''))
+    n = re.sub(r'^[0-9a-f]{8}-', '', os.path.basename(n or ''))
+    return re.sub(r'^\d{10,}_', '', n)          # download/upload timestamp prefix (e.g. 1794456312671_)
 
 
 def variant_of(title):
@@ -253,9 +254,11 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
         # marker PICTURE: internal right-side MNMK vs the one in the previous CBS -> keep the correct one
         b0 = info['blocks'][bmap[mains[0].title]] if mains else None
         lines0 = read_internal_block(wsv, b0['r0'], b0['r1'])['lines'] if b0 else []
-        im = read_internal_mnmk(internal, wsv, lines0, info['gender'])
+        # fabric sheets already exist (previous submission): only the CURRENT tab's MNMK may replace them
+        im = read_internal_mnmk(internal, wsv, lines0, info['gender'], other_tabs=False)
         if im:
             rep['pic_choice'] = choose_pictures(out, im, pics or {}, crop)
+            apply_parts(out, im, crop, rep['warnings'], info.get('style'))
             rep['internal_mnmk'] = [dict(title=x['title'], line=x['line'], ok=x['ok'],
                                          **{k: x['fields'].get(k) for k in ('width', 'eff', 'gqty', 'pqty', 'yy', 'direction')})
                                     for x in im]
@@ -270,6 +273,8 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
         b0 = info['blocks'][bmap[mains[0].title]] if mains else None
         lines0 = read_internal_block(wsv, b0['r0'], b0['r1'])['lines'] if b0 else []
         im = read_internal_mnmk(internal, wsv, lines0, info['gender'])
+        if im and im[0].get('tab'):
+            rep['warnings'].append(W('mnmk_tab', tab=im[0]['tab']))
         rep['internal_mnmk'] = [dict(title=x['title'], line=x['line'], ok=x['ok'],
                                      **{k: x['fields'].get(k) for k in ('width', 'eff', 'gqty', 'pqty', 'yy', 'direction')})
                                 for x in im]
@@ -279,6 +284,8 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             for x in im:
                 x['block']['style'] = info.get('style')
                 build_from_mnmk(out, layout, x['title'], x['block'], crop=crop is not False)
+            apply_parts(out, im, crop, rep['warnings'], info.get('style'))
+            for x in im:
                 miss = [k for k in ('width', 'eff', 'gqty', 'pqty') if not x['fields'].get(k)]
                 if miss or x['ok'] is False:
                     rep['warnings'].append(W('ocr_check', sheet=x['title'], miss=', '.join(miss) or "Garment Q'ty"))
@@ -316,17 +323,47 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
 
 def _pic_match(ws, cands):
     """Internal right-side picture that belongs to this fabric sheet (codes, then name)."""
+    for x in cands:
+        if x['title'] == ws.title:
+            return x
     pc = panel_codes(ws)
     for x in cands:
+        if x.get('part_main') is False:
+            continue                       # extra part of a split fabric -> only by its own sheet title
         if code_overlap(pc, {t for t in re.split(r'[\s/,()#:]+', x['header'].upper()) if len(t) >= 5
                              and re.search(r'\d', t)}):
             return x
     t = _norm(re.sub(r'\(.*?\)', '', ws.title))
     for x in cands:
         n = _norm(re.sub(r'\(.*?\)', '', x['title']))
-        if t and n and (t in n or n in t):
+        if t and n and (t in n or n in t) and x.get('part_main') is not False:
             return x
     return None
+
+
+def apply_parts(out, im, crop, warnings, style=None):
+    """Same fabric with several MNMK (internal '0.459+1.458'): extra part sheets get their own yy
+    (part x open/internal loss factor); the main sheet later gets the rest (sync_panels: main = net - aux)."""
+    layout = None
+    for x in im:
+        if x.get('part_main') is not False or not x.get('part_yy'):
+            continue
+        n_parts = sum(1 for y in im if y['_hcol'] == x['_hcol'])
+        hc = {t for t in re.split(r'[\s/,()#:]+', x['header'].upper()) if len(t) >= 5 and re.search(r'\d', t)}
+        have = [s for s in out.worksheets if is_panel_sheet(s) and s.title != x['title'] and code_overlap(panel_codes(s), hc)]
+        if x['title'] not in out.sheetnames and len(have) >= n_parts:
+            continue          # the buyer file already splits this fabric (e.g. SELF 1 + SELF 1 (BINDING))
+        if x['title'] not in out.sheetnames:
+            if layout is None:
+                layout = openpyxl.load_workbook(os.path.join(HERE, 'assets', 'panel_layout.xlsx')).worksheets[0]
+            x['block']['style'] = style
+            main = next((y for y in im if y.get('part_main') and y['_hcol'] == x['_hcol']), None)
+            idx = out.sheetnames.index(main['title']) + 1 if main and main['title'] in out.sheetnames else None
+            build_from_mnmk(out, layout, x['title'], x['block'], index=idx, crop=crop is not False)
+        ws = out[x['title']]
+        yy = round(x['part_yy'] * (x.get('scale') or 1), 4)
+        recompute_marker(ws, yy)
+        warnings.append(W('split_part', sheet=x['title'], part=x['part_yy'], yy=yy))
 
 
 def _is_self(title):
@@ -427,6 +464,10 @@ def sync_panels(out, mains, info, warnings):
         by_name = [r for r in rows if r['net'] and nm(r) and (nm(r) in pt or pt in nm(r))] or \
                   [r for r in rows if r['net'] and len(pt) > 4 and pt in r['mat']]
         by_code = [r for r in rows if r['net'] and code_overlap(r['codes'], pc)]
+        mnum = re.match(r'\s*self\s*(\d+)\b', re.sub(r'\(.*?\)', '', p.title), re.I)
+        if not by_name and not by_code and mnum:
+            # 'SELF 2' sheet <-> 'Shell 2' fabric row
+            by_name = [r for r in rows if r['net'] and re.search(r'\bshell\s*%s\b' % mnum.group(1), r['comp'], re.I)]
         if not by_name and not by_code and pt.startswith('self'):
             # 'SELF' sheet <-> the Shell 1 / first Body fabric row of S28 templates
             body = [r for r in rows if r['net'] and r['sec'] == 'body']

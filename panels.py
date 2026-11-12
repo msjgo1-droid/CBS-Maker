@@ -141,14 +141,51 @@ def _crop_by_pieces(a, pad):
     from scipy import ndimage
     sat = (a.max(axis=2) - a.min(axis=2)) > 40
     sat = ndimage.binary_opening(sat, iterations=2)          # drop 1-3px pink/blue grid lines
-    rr = _longest_run(sat.sum(axis=1) >= max(3, 0.01 * a.shape[1]), gap=8)
+    rowc = sat.sum(axis=1)
+    rr = _longest_run(rowc >= max(3, 0.01 * a.shape[1]), gap=8)
     if not rr or rr[1] - rr[0] < 20:
         return None
+    rr = _trim_strips(rowc, rowc >= max(3, 0.01 * a.shape[1]), rr, 0.3) or rr
     band = sat[rr[0]:rr[1] + 1]
-    cr = _longest_run(band.sum(axis=0) >= max(2, 0.03 * band.shape[0]), gap=15)
+    col = band.sum(axis=0)
+    cr = _longest_run(col >= max(2, 0.03 * band.shape[0]), gap=15)
     if not cr or cr[1] - cr[0] < 30:
         return None
+    # drop a thin UI strip (blue side-panel header etc.) stuck to either end across a small gap
+    cr = _trim_strips(col, col >= max(2, 0.03 * band.shape[0]), cr, 0.3) or cr
     return cr[0], rr[0], cr[1], rr[1]
+
+
+def _trim_strips(cnt, on, run, strong):
+    """Within run, split into on-segments; drop weak end segments (peak < frac x run peak) separated by a gap of >=5 px."""
+    x0, x1 = int(run[0]), int(run[1])
+    strong = strong * cnt[x0:x1 + 1].max()
+    segs, s0 = [], None
+    for x in range(x0, x1 + 2):
+        v = x <= x1 and on[x]
+        if v and s0 is None:
+            s0 = x
+        elif not v and s0 is not None:
+            segs.append([s0, x - 1]); s0 = None
+    if not segs:
+        return None
+    while len(segs) > 1 and cnt[segs[0][0]:segs[0][1] + 1].max() < strong and segs[1][0] - segs[0][1] >= 5:
+        segs.pop(0)
+    while len(segs) > 1 and cnt[segs[-1][0]:segs[-1][1] + 1].max() < strong and segs[-1][0] - segs[-2][1] >= 5:
+        segs.pop()
+    return segs[0][0], segs[-1][1]
+
+
+def _colours(a, box):
+    """Number of distinct saturated colours (each >= 1% of the box) - a marker has many piece colours."""
+    x0, y0, x1, y1 = [int(v) for v in box]
+    b = a[y0:y1 + 1, x0:x1 + 1]
+    sat = (b.max(axis=2) - b.min(axis=2)) > 40
+    if not sat.any():
+        return 0
+    q = ((b[..., 0] // 48) * 36 + (b[..., 1] // 48) * 6 + (b[..., 2] // 48))[sat]
+    _, c = np.unique(q, return_counts=True)
+    return int((c >= 0.01 * b.shape[0] * b.shape[1]).sum())
 
 
 def crop_marker(data, pad=3):
@@ -156,8 +193,21 @@ def crop_marker(data, pad=3):
     im = Image.open(io.BytesIO(data)).convert('RGB')
     a = np.asarray(im).astype(int)
     box = _crop_by_background(a, im, pad)
+    if box is not None and _colours(a, box) < 3:
+        box = None                    # a highlighted Excel cell / text box, not a marker
     if box is None or (box[2] - box[0]) * (box[3] - box[1]) > 0.85 * a.shape[0] * a.shape[1]:
         box = _crop_by_pieces(a, pad) or box
+    else:
+        # dark pieces (navy, dark green) can break the background run -> widen to the pieces on the same rows
+        pb = _crop_by_pieces(a, pad)
+        inside = False
+        if pb:
+            area = lambda b: max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+            ov = area((max(pb[0], box[0]), max(pb[1], box[1]), min(pb[2], box[2]), min(pb[3], box[3])))
+            inside = ov >= 0.7 * area(box) and area(pb) < 0.85 * a.shape[0] * a.shape[1]
+        if pb and (inside or (abs(pb[1] - box[1]) <= 15 and abs(pb[3] - box[3]) <= 15)) and \
+                (pb[0] < box[0] - 10 or pb[2] > box[2] + 10 or pb[1] < box[1] - 10 or pb[3] > box[3] + 10):
+            box = (min(box[0], pb[0]), min(box[1], pb[1]), max(box[2], pb[2]), max(box[3], pb[3]))
     if box is None:
         return data, im.size, im.size
     x0, y0, x1, y1 = box

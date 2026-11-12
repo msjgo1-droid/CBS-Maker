@@ -74,7 +74,8 @@ def parse_fields(text):
     out = dict(
         width=g(r'(?:WIDTH|IDTH)\W{0,4}(\d{2,3})\s*["”]?', lambda x: f'{x}"') or
         g(r'\bW\w{3,5}\s*[:=]\s*(\d{2,3})\s*["”]', lambda x: f'{x}"'),
-        eff=g(r'Efficiency\s*[:\-]?\s*(\d{2}\.\d{1,2})', float),
+        eff=g(r'Effic\w*\s*[:\-]?\s*(\d{2}\.\d{1,2})', float) or
+            g(r'(?m)FAB DETAIL[^\n]*?\s([5-9]\d\.\d{2})\s*$', float),
         pqty=g(r"Panel\s*Q.?ty\s*(\d{1,4})", int),
         gqty=g(r"GARMENT\s*Q.?TY\s*(\d{1,3})(?!\.)", int),
         yy=g(r'(\d\.\d{3})\s*[\]}|]?\s*(?:Panel|\n)', float),
@@ -160,19 +161,56 @@ def solve_marker(f, yy_hint=None, ref_qty=None):
     return True
 
 
-def read_internal_mnmk(internal_bytes, ws_values, lines, gender):
-    """Return [{title, block, fields, ok}] — block has the keys panels.build_from_mnmk expects."""
-    pics = sorted([p for p in pictures(internal_bytes, 0) if p['col'] >= 16 and p['row'] <= 5],
-                  key=lambda p: p['col'])
+def _is_marker_pic(p):
+    """MNMK picture (marker layout of coloured pieces) - not a fabric spec sheet / text screenshot."""
+    import numpy as np
+    from panels import _colours
+    data = p['data'] if p['ext'] in ('png', 'jpg', 'jpeg') else None
+    if data is None:
+        try:
+            from xlimages import to_png
+            data = to_png(p['data'], p['ext'])
+        except Exception:
+            return True
+    if not data:
+        return True
+    p['_png'] = data
+    cb, full, cropped = crop_marker(data)
+    if cropped == full:
+        return False
+    a = np.asarray(Image.open(io.BytesIO(cb)).convert('RGB')).astype(int)
+    return _colours(a, (0, 0, a.shape[1] - 1, a.shape[0] - 1)) >= 6
+
+
+def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=None, other_tabs=True):
+    """Return [{title, block, fields, ok, tab}] — block has the keys panels.build_from_mnmk expects.
+    MNMK pictures sit right of the costing, top rows. When the current tab has none, the newest
+    other tab that has them is used (rep shows which tab)."""
+    wb = ws_values.parent
+    if sheet_index is None:
+        cur = wb.worksheets.index(ws_values)
+        order = [cur] + ([i for i in range(len(wb.worksheets)) if i != cur] if other_tabs else [])
+        for i in order:
+            if any(p['col'] >= 16 and p['row'] <= 60 and _is_marker_pic(p) for p in pictures(internal_bytes, i)):
+                res = read_internal_mnmk(internal_bytes, wb.worksheets[i], lines, gender, sheet_index=i)
+                for x in res:
+                    x['tab'] = wb.worksheets[i].title if i != cur else None
+                return res
+        return []
+    pics = sorted([p for p in pictures(internal_bytes, sheet_index) if p['col'] >= 16 and p['row'] <= 60
+                   and _is_marker_pic(p)], key=lambda p: (p['col'], p['row']))
     if not pics:
         return []
     headers = {c.column: _s(c.value) for c in ws_values[1] if c.column >= 17 and _s(c.value)}
     fabrics = [l for l in lines if l['key'] == 'fabric']
     out, used_titles = [], {}
     for p in pics:
-        hcol = max((c for c in headers if c <= p['col'] + 1), default=None)
+        hcol = max((c for c in headers if c <= p['col'] + 1), default=None) or \
+            min((c for c in headers if c <= p['col'] + 4), default=None)
         head = headers.get(hcol, '')
         ln = next((l for l in fabrics if _codes(head) & (_codes(l['detail']) | _codes(l['remark']))), None)
+        if ln is None and len(pics) == 1 and len(fabrics) == 1:
+            ln = fabrics[0]
         if ln is None:
             hn = re.sub(r'[^a-z]', '', head.lower())
             ln = next((l for l in fabrics if re.sub(r'[^a-z]', '', (l['item'] or l['detail']).lower())
@@ -182,11 +220,17 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender):
         n = used_titles.get(base, 0) + 1
         used_titles[base] = n
         title = base if n == 1 else f'{base} ({n})'
-        png = p['data'] if p['ext'] in ('png', 'jpg', 'jpeg') else None
+        png = p.get('_png') or (p['data'] if p['ext'] in ('png', 'jpg', 'jpeg') else None)
         if png is None:
             from xlimages import to_png
             png = to_png(p['data'], p['ext'])
         f = parse_fields(ocr_text(png)) if png else {}
+        if not f.get('width'):
+            # tiny CAD status bar unreadable -> cuttable width written in the fabric header ('60" CW')
+            mw = re.search(r'(\d{2,3})\s*(?:"|”|\'\'|INCH|IN)?\s*C\.?W\b', head.upper()) or \
+                re.search(r'(\d{2,3})\s*C\.?W\b', ((ln or {}).get('remark') or '') + ' ' + ((ln or {}).get('detail') or ''), re.I)
+            if mw:
+                f['width'] = f'{mw.group(1)}"'
         ok = None
         f['_yy_hint'] = ln.get('iyy') if ln else None
         marker_png = crop_marker(png)[0] if png else None
@@ -195,8 +239,34 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender):
         block = dict(date=None, width=f.get('width'), style=None, marker_y=f.get('marker_y'), marker_in=f.get('inch'),
                      fab=head.replace('\n', ' ')[:120], eff=f.get('eff'), size=size, shrink=shrink,
                      gqty=f.get('gqty'), pqty=f.get('pqty'), image=marker_png)
-        out.append(dict(title=title, block=block, fields=f, ok=ok, header=head,
+        out.append(dict(title=title, block=block, fields=f, ok=ok, header=head, _hcol=hcol, _line=ln,
                         line=(ln['item'] or ln['detail']) if ln else None))
+    # several MNMK under one fabric header = same fabric cut for different parts (e.g. 0.459 + 1.458 = 1.917)
+    groups = {}
+    for x in out:
+        groups.setdefault(x['_hcol'], []).append(x)
+    for xs in groups.values():
+        if len(xs) < 2:
+            continue
+        ln = xs[0]['_line']
+        parts = list((ln or {}).get('parts') or [])
+        for k, x in enumerate(xs):
+            py = x['fields'].get('yy')
+            if not py and len(parts) == len(xs):
+                py = parts[k]
+            x['part_yy'] = py
+            x['fields']['_yy_hint'] = py
+        scale = (ln['yy'] / ln['iyy']) if ln and ln.get('iyy') and ln.get('yy') else 1
+        xs.sort(key=lambda x: -(x.get('part_yy') or 0))       # biggest part = main sheet
+        base = xs[0]['title'].split(' (')[0]
+        for k, x in enumerate(xs):
+            x['title'] = base if k == 0 else f'{base} ({k + 1})'
+            x['scale'] = scale
+            x['part_main'] = k == 0
+    order = []
+    for xs in groups.values():
+        order += xs
+    out[:] = order
     # garment Q'ty: the marker whose reading is unambiguous sets the reference for the others
     ref = None
     for x in out:
