@@ -1,5 +1,6 @@
 """Fill a HOKA buyer CBS main sheet (template / Solid / Heather) from an internal CBS block."""
 import re
+from openpyxl.utils import get_column_letter
 from copy import copy
 
 from cbs_format import map_columns, find_label
@@ -275,10 +276,37 @@ def _set(ws, r, col, val, changes, sheet):
     c.value = val
 
 
+def repair_sum_columns(ws):
+    """Some PLM templates (wide ones, Unit Price in AA) come with sums pointing at the wrong column, e.g.
+    Body =SUM(A12:A14), Sub-total =SUM(A57:A60), FOB =SUM(A61:A62) -> FOB shows 0. Re-point every SUM range
+    in the Unit Price column at that column. Returns the cells fixed."""
+    h, c = buyer_columns(ws)
+    uc = c.get('unit')
+    if not h or not uc:
+        return []
+    L = get_column_letter(uc)
+    fixed = []
+    pat = re.compile(r'(?<![A-Z$])(\$?)([A-Z]{1,3})(\$?)(\d+):(\$?)([A-Z]{1,3})(\$?)(\d+)')
+    for r in range(h + 1, ws.max_row + 1):
+        v = ws.cell(r, uc).value
+        if not (isinstance(v, str) and v.startswith('=') and 'SUM' in v.upper()):
+            continue
+        def rep(m):
+            if m.group(2) == m.group(6) and m.group(2) != L:
+                return f'{m.group(1)}{L}{m.group(3)}{m.group(4)}:{m.group(5)}{L}{m.group(7)}{m.group(8)}'
+            return m.group(0)
+        nv = pat.sub(rep, v)
+        if nv != v:
+            ws.cell(r, uc).value = nv
+            fixed.append(f'{L}{r}: {v} -> {nv}')
+    return fixed
+
+
 def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True, prev_splits=None, include_minor=False):
     """variant: 'solid'/'heather'/None. manual: {buyer_row: internal_line_index or -1 (skip)}.
     Returns dict(log, changes, unplaced, added)."""
     manual = manual or {}
+    repaired = repair_sum_columns(ws)
     h, c = buyer_columns(ws)
     lines = blk['lines']
     for ln in lines:
@@ -382,7 +410,7 @@ def fill_sheet(ws, blk, variant=None, manual=None, add_missing=True, prev_splits
     # LOP
     rows, sections, lop = buyer_rows(ws)
     set_lop(ws, c, lop or h, blk, changes)
-    return dict(log=log, changes=changes, added=added, excluded=[] if include_minor else excluded,
+    return dict(log=log, changes=changes, added=added, repaired=repaired, excluded=[] if include_minor else excluded,
                 unplaced=[f"{l['cat']} / {l['detail']}" for l in unplaced])
 
 

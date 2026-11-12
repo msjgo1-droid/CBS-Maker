@@ -48,6 +48,8 @@ T = {
     'up_prev': ('③ 이전 제출본 (CO 스타일)', '③ Previous submission (CO styles)', '③ Bản đã nộp trước (style CO)'),
     'up_mnmk': ('④ MNMK (YY REQUEST)', '④ MNMK (YY REQUEST)', '④ MNMK (YY REQUEST)'),
     'styles': ('스타일별 파일 묶음', 'Files per style', 'File theo từng style'),
+    'reading_mnmk': ('MNMK 사진 읽는 중', 'reading MNMK picture', 'đang đọc ảnh MNMK'),
+    'working': ('작업 중…', 'working…', 'đang xử lý…'),
     'run': ('▶ 실행 (Internal 정리 + 바이어 CBS 생성)', '▶ Run (format internal + build buyer CBS)',
             '▶ Chạy (chuẩn hoá CBS nội bộ + tạo CBS buyer)'),
     'crop': ('MNMK 사진에서 마커 부분만 자르기', 'Crop MNMK picture to the marker', 'Cắt ảnh MNMK chỉ lấy sơ đồ'),
@@ -137,6 +139,9 @@ WARN = {
     'split_part': ('[{sheet}] 같은 원단의 다른 부위 MNMK — 내부 요척 {part} × 오픈 LOSS 비율 = {yy} 로 계산, 메인 시트는 나머지(오픈 요척 − 이 값)',
                    '[{sheet}] second MNMK of the same fabric — internal yy {part} × open loss ratio = {yy}; the main sheet takes the rest (open yy − this)',
                    '[{sheet}] MNMK thứ hai của cùng loại vải — định mức nội bộ {part} × tỉ lệ hao hụt open = {yy}; sheet chính lấy phần còn lại'),
+    'sum_fixed': ('[{sheet}] 템플릿 합계 수식이 다른 열(A열 등)을 가리키고 있어서 Unit Price 열로 고쳤어요 ({n}곳) — 안 고치면 FOB가 0으로 나와요',
+                  '[{sheet}] template SUM formulas pointed at the wrong column (e.g. A) — re-pointed {n} of them to Unit Price (otherwise FOB shows 0)',
+                  '[{sheet}] công thức tổng của template trỏ sai cột (vd. cột A) — đã sửa {n} chỗ về cột Unit Price (nếu không FOB = 0)'),
     'mnmk_tab': ('현재 탭에 MNMK 사진이 없어 [{tab}] 탭의 MNMK 사진을 사용했어요 — 마커 길이는 현재 오픈 요척으로 다시 계산했지만, 최신 마커인지 확인해 주세요',
                  'No MNMK picture on the current tab — used the one on tab [{tab}]; marker length re-calculated from the current open yy, please check it is the latest marker',
                  'Tab hiện tại không có ảnh MNMK — đã dùng ảnh ở tab [{tab}]; chiều dài sơ đồ được tính lại theo định mức open hiện tại, hãy kiểm tra có phải sơ đồ mới nhất không'),
@@ -256,11 +261,20 @@ with tab_make:
     if groups and st.button(t('run'), type='primary', use_container_width=True):
         st.session_state['yy_popup'] = True
         res.clear()
+        import time as _time
+        import internal_mnmk as _im
         bar = st.progress(0.0)
+        n_ = len(groups)
+        t0 = _time.time()
         for i, (stl, g) in enumerate(sorted(groups.items())):
-            bar.progress(i / len(groups), text=stl)
+            def _cb(k, n, i=i, stl=stl):
+                bar.progress(min((i + (k + 1) / max(n, 1) * 0.9) / n_, 1.0),
+                             text=f"{stl} ({i + 1}/{n_}) · {t('reading_mnmk')} {k + 1}/{n} · {int(_time.time() - t0)}s")
+            _im.PROGRESS = _cb
+            bar.progress(i / n_, text=f"{stl} ({i + 1}/{n_}) · {t('working')} · {int(_time.time() - t0)}s")
             run_one(stl, g)
-        bar.progress(1.0, text='done')
+        _im.PROGRESS = None
+        bar.progress(1.0, text=f"done · {int(_time.time() - t0)}s")
 
     if res and st.session_state.pop('yy_popup', False) and any(
             (r.get('rep') or {}).get('yy_drops') for r in res.values()):

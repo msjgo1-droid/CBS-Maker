@@ -226,6 +226,8 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
                 rep['warnings'].append(W('no_match', sheet=ws.title, row=l['row'], comp=l['component']))
         for a in res['added']:
             rep['warnings'].append(W('row_added', sheet=ws.title, row=a['row'], comp=a['component'], sec=a['section']))
+        if res.get('repaired'):
+            rep['warnings'].append(W('sum_fixed', sheet=ws.title, n=len(res['repaired'])))
         if res['unplaced']:
             rep['warnings'].append(W('not_placed', sheet=ws.title, items=', '.join(res['unplaced'])))
 
@@ -455,8 +457,9 @@ def sync_panels(out, mains, info, warnings):
             mat = material_text(ws, r, c).upper()
             codes = {t for t in re.split(r'[\s/,()#]+', mat) if len(t) >= 5 and re.search(r'\d', t)}
             net = ws.cell(r, c['net']).value
+            cw = ws.cell(r, c['width']).value if c.get('width') else None
             rows.append(dict(sheet=ws.title, row=r, comp=comp, codes=codes, mat=_norm(mat), sec=sec,
-                             net=net if isinstance(net, (int, float)) else 0))
+                             net=net if isinstance(net, (int, float)) else 0, cw=cw))
     groups = {}
     for p in [s for s in out.worksheets if is_panel_sheet(s)]:
         pc, pt = panel_codes(p), _norm(re.sub(r'\(.*?\)', '', p.title))
@@ -486,6 +489,16 @@ def sync_panels(out, mains, info, warnings):
             c0 = dict(c0, net=round(sum(r['net'] for r in same), 4))
         key = (c0['comp'].lower(), round(c0['net'], 4))
         groups.setdefault(key, []).append((p, c0))
+        # cuttable width unreadable in the MNMK picture -> the buyer template row has it
+        fw = find_fields(p, 1, 12).get('width')
+        try:
+            cwv = float(str(c0.get('cw') or '').replace('"', '').strip())
+        except ValueError:
+            cwv = 0
+        if cwv > 80:
+            cwv = int(cwv / 2.54)          # template width in cm (138 -> 54")
+        if fw and p.cell(*fw).value in (None, '') and cwv > 0:
+            p.cell(*fw).value = f'{cwv:g}"'
     out_rep = []
     for key, items in groups.items():
         net = items[0][1]['net']

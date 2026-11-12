@@ -6,6 +6,8 @@ is cropped out of the screenshot. Marker LENGTH is not taken from the picture: i
 buyer (open) yy later, like every other fabric sheet.
 """
 import io
+import os
+os.environ.setdefault('OMP_THREAD_LIMIT', '1')   # tesseract threads thrash on small cloud CPUs
 import re
 
 from PIL import Image
@@ -22,8 +24,17 @@ def _codes(t):
     return {x for x in re.split(r'[\s/,()#:]+', _s(t).upper()) if len(x) >= 5 and re.search(r'\d', x)}
 
 
+_OCR_CACHE = {}
+PROGRESS = None          # app sets a callback(i, n) to show 'reading MNMK picture i/n'
+
+
 def ocr_text(png):
-    """Whole picture text + (Gerber AccuMark) status-bar text read at 4x."""
+    """Whole picture text + Garment/Panel Q'ty row + (Gerber AccuMark) status bar - the slow extra passes
+    only run when the fields are still missing. Results cached per picture (re-runs are instant)."""
+    import hashlib
+    key = hashlib.sha1(png).hexdigest()
+    if key in _OCR_CACHE:
+        return _OCR_CACHE[key]
     try:
         import pytesseract
         import numpy as np
@@ -33,27 +44,48 @@ def ocr_text(png):
     try:
         txt = pytesseract.image_to_string(im.resize((im.width * 2, im.height * 2)))
         txt += _qty_boxes(pytesseract, im)
+
+        def need():
+            f = parse_fields(txt)
+            return [k for k in ('width', 'eff', 'pqty') if not f.get(k)] + \
+                ([] if f.get('inch') is not None or f.get('yy') else ['len'])
+        if [k for k in need() if k in ('width', 'eff', 'pqty')] or not parse_fields(txt).get('gqty'):
+            # small screenshot: read the table above the marker on its own, bigger
+            try:
+                from panels import _crop_by_pieces
+                pb = _crop_by_pieces(np.asarray(Image.open(io.BytesIO(png)).convert('RGB')).astype(int), 0)
+            except Exception:
+                pb = None
+            if pb and pb[1] > 40:
+                tab = im.crop((0, 0, im.width, int(pb[1])))
+                big = tab.resize((tab.width * 4, tab.height * 4), Image.LANCZOS)
+                for b in (big, big.point(lambda p: 255 if p > 160 else 0)):
+                    txt += '\n@@TAB@@\n' + pytesseract.image_to_string(b, config='--psm 6')
+                txt += _qty_boxes(pytesseract, tab, S=5)
         a = np.asarray(im)
         rows = np.where((a < 60).mean(axis=1) > 0.3)[0]
         rows = rows[rows > a.shape[0] * 0.5]
-        if len(rows):
+        if len(rows) and need():
             from PIL import ImageFilter
             band0 = im.crop((0, int(rows.min()), im.width, int(rows.max()) + 1))
-            for S in (3, 4, 5, 6):                       # several scales -> vote / try every reading
+            for S in (4, 3, 5, 6):                       # several scales -> vote; stop once fields are found
                 band = band0.resize((band0.width * S, band0.height * S), Image.LANCZOS)
                 for b in (band, band.filter(ImageFilter.SHARPEN)):
                     txt += '\n@@BAR@@\n' + pytesseract.image_to_string(b, config='--psm 6')
-            txt += _ct_boxes(pytesseract, band0)
+                if not need():
+                    break
+            if 'pqty' in need():
+                txt += _ct_boxes(pytesseract, band0)
+        _OCR_CACHE[key] = txt
         return txt
     except Exception:                                        # tesseract binary missing
         return None
 
 
-def _qty_boxes(pytesseract, im):
+def _qty_boxes(pytesseract, im, S=3):
     """MNMK table row 'GARMENT Q'TY | 2 | 0.164 | Panel Q'ty | 14': read that row on its own (table lines removed)
     plus the sparse-text tokens on the same row; integer left of the yy = garments, right of it = panels."""
     import numpy as np
-    S = 3
     big = im.resize((im.width * S, im.height * S), Image.LANCZOS)
     d = pytesseract.image_to_data(big, config='--psm 11', output_type=pytesseract.Output.DICT)
     words = [(w.strip(), d['left'][i], d['top'][i], d['width'][i], d['height'][i])
@@ -123,7 +155,10 @@ def parse_fields(text):
         shrink=g(r'L\s*[:;]\s*(\d{1,2})\s*%', int),
     )
     if not out['gqty']:                                      # qty printed just before the red yy
-        out['gqty'] = g(r'(?<![\d.])(\d{1,3})\s+\d\.\d{3}', int)
+        # only on the GARMENT Q'TY / Panel Q'ty row - elsewhere 'n 0.136' is anything (dates, %, sizes)
+        qrow = '\n'.join(l for l in t.splitlines() if re.search(r'GARM|Panel', l, re.I))
+        mq = re.search(r'(?<![\d.])(\d{1,3})\s+\d\.\d{3}', qrow)
+        out['gqty'] = int(mq.group(1)) if mq else None
     bars = t.split('@@BAR@@')[1:] if '@@BAR@@' in t else []
     if bars:                                                 # Gerber AccuMark status bar, read several times
         from collections import Counter
@@ -253,7 +288,9 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
     headers = {c.column: _s(c.value) for c in ws_values[1] if c.column >= 17 and _s(c.value)}
     fabrics = [l for l in lines if l['key'] == 'fabric']
     out, used_titles = [], {}
-    for p in pics:
+    for n_, p in enumerate(pics):
+        if PROGRESS:
+            PROGRESS(n_, len(pics))
         hcol = max((c for c in headers if c <= p['col'] + 1), default=None) or \
             min((c for c in headers if c <= p['col'] + 4), default=None)
         head = headers.get(hcol, '')
