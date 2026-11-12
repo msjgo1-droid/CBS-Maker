@@ -32,6 +32,7 @@ def ocr_text(png):
     im = Image.open(io.BytesIO(png)).convert('L')
     try:
         txt = pytesseract.image_to_string(im.resize((im.width * 2, im.height * 2)))
+        txt += _qty_boxes(pytesseract, im)
         a = np.asarray(im)
         rows = np.where((a < 60).mean(axis=1) > 0.3)[0]
         rows = rows[rows > a.shape[0] * 0.5]
@@ -46,6 +47,39 @@ def ocr_text(png):
         return txt
     except Exception:                                        # tesseract binary missing
         return None
+
+
+def _qty_boxes(pytesseract, im):
+    """MNMK table row 'GARMENT Q'TY | 2 | 0.164 | Panel Q'ty | 14': read that row on its own (table lines removed)
+    plus the sparse-text tokens on the same row; integer left of the yy = garments, right of it = panels."""
+    import numpy as np
+    S = 3
+    big = im.resize((im.width * S, im.height * S), Image.LANCZOS)
+    d = pytesseract.image_to_data(big, config='--psm 11', output_type=pytesseract.Output.DICT)
+    words = [(w.strip(), d['left'][i], d['top'][i], d['width'][i], d['height'][i])
+             for i, w in enumerate(d['text']) if w.strip()]
+    out = ''
+    for w, x, y, ww, h in words:
+        if not re.search(r'GARM', w, re.I):
+            continue
+        band = big.crop((0, max(0, y - h), big.width, y + 2 * h))
+        a = np.asarray(band).copy()
+        a[:, (a < 100).mean(axis=0) > 0.6] = 255
+        a[(a < 100).mean(axis=1) > 0.5, :] = 255
+        for psm in (6, 7):
+            t = pytesseract.image_to_string(Image.fromarray(a), config=f'--psm {psm}')
+            m = re.search(r"GARMENT\s*Q.?TY\W*(\d{1,3})\W+(\d?\.\d{2,4})\W*Panel\s*Q.?ty\W*(\d{1,4})", t, re.I)
+            if m:
+                out += f'\n@@GQ@@ {m.group(1)}\n@@GQ@@ {m.group(1)}\n@@PQ@@ {m.group(3)}\n@@PQ@@ {m.group(3)}'
+        # same-row tokens from the sparse read
+        row = [(w2, x2) for w2, x2, y2, ww2, h2 in words if abs((y2 + h2 / 2) - (y + h / 2)) < h and x2 > x]
+        dec = [x2 for w2, x2 in row if re.fullmatch(r'\(?\d?\.\d{2,4}\)?', w2)]
+        if dec:
+            for w2, x2 in row:
+                if re.fullmatch(r'\d{1,4}', w2):
+                    out += f'\n@@{"GQ" if x2 < dec[0] else "PQ"}@@ {w2}'
+        break
+    return out
 
 
 def _ct_boxes(pytesseract, band0):
@@ -68,6 +102,12 @@ def _ct_boxes(pytesseract, band0):
     return out
 
 
+def _vote(t, lab):
+    from collections import Counter
+    c = Counter(int(v) for v in re.findall(r'@@%s@@ (\d{1,4})' % lab, t or '') if int(v) > 0)
+    return c.most_common(1)[0][0] if c else None
+
+
 def parse_fields(text):
     t = text or ''
     g = lambda pat, f=lambda x: x: (lambda m: f(m.group(1)) if m else None)(re.search(pat, t, re.I | re.S))
@@ -76,8 +116,8 @@ def parse_fields(text):
         g(r'\bW\w{3,5}\s*[:=]\s*(\d{2,3})\s*["”]', lambda x: f'{x}"'),
         eff=g(r'Effic\w*\s*[:\-]?\s*(\d{2}\.\d{1,2})', float) or
             g(r'(?m)FAB DETAIL[^\n]*?\s([5-9]\d\.\d{2})\s*$', float),
-        pqty=g(r"Panel\s*Q.?ty\s*(\d{1,4})", int),
-        gqty=g(r"GARMENT\s*Q.?TY\s*(\d{1,3})(?!\.)", int),
+        pqty=_vote(t, 'PQ') or g(r"Panel\s*Q.?ty\s*(\d{1,4})", int),
+        gqty=_vote(t, 'GQ') or g(r"GARMENT\s*Q.?TY[\s\[|(]{0,4}(\d{1,3})(?![\d.])", int),
         yy=g(r'(\d\.\d{3})\s*[\]}|]?\s*(?:Panel|\n)', float),
         inch=g(r'(\d{1,2}\.\d{2})\s*IN\b', float),
         shrink=g(r'L\s*[:;]\s*(\d{1,2})\s*%', int),
@@ -161,6 +201,15 @@ def solve_marker(f, yy_hint=None, ref_qty=None):
     return True
 
 
+def _area(x):
+    """Marker picture size (pixels of the cropped marker) - fallback measure of how big a marker is."""
+    try:
+        im = Image.open(io.BytesIO(crop_marker(x['block']['image'])[0]))
+        return im.width * im.height
+    except Exception:
+        return 0
+
+
 def _is_marker_pic(p):
     """MNMK picture (marker layout of coloured pieces) - not a fabric spec sheet / text screenshot."""
     import numpy as np
@@ -224,7 +273,10 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
         if png is None:
             from xlimages import to_png
             png = to_png(p['data'], p['ext'])
-        f = parse_fields(ocr_text(png)) if png else {}
+        _t = ocr_text(png) if png else None
+        f = parse_fields(_t) if png else {}
+        if _t:
+            f['_binding'] = bool(re.search(r'BINDING', _t.split('@@')[0], re.I))
         if not f.get('width'):
             # tiny CAD status bar unreadable -> cuttable width written in the fabric header ('60" CW')
             mw = re.search(r'(\d{2,3})\s*(?:"|”|\'\'|INCH|IN)?\s*C\.?W\b', head.upper()) or \
@@ -239,7 +291,7 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
         block = dict(date=None, width=f.get('width'), style=None, marker_y=f.get('marker_y'), marker_in=f.get('inch'),
                      fab=head.replace('\n', ' ')[:120], eff=f.get('eff'), size=size, shrink=shrink,
                      gqty=f.get('gqty'), pqty=f.get('pqty'), image=marker_png)
-        out.append(dict(title=title, block=block, fields=f, ok=ok, header=head, _hcol=hcol, _line=ln,
+        out.append(dict(title=title, block=block, fields=f, ok=ok, header=head, _hcol=hcol, _line=ln, _row=p['row'],
                         line=(ln['item'] or ln['detail']) if ln else None))
     # several MNMK under one fabric header = same fabric cut for different parts (e.g. 0.459 + 1.458 = 1.917)
     groups = {}
@@ -249,18 +301,36 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
         if len(xs) < 2:
             continue
         ln = xs[0]['_line']
+        xs.sort(key=lambda x: x['_row'])
         parts = list((ln or {}).get('parts') or [])
-        for k, x in enumerate(xs):
+        # a yy read from the picture claims its part; pictures without one take what is left
+        left = list(parts)
+        for x in xs:
             py = x['fields'].get('yy')
-            if not py and len(parts) == len(xs):
-                py = parts[k]
+            if py and left:
+                near = min(left, key=lambda v: abs(v - py))
+                if abs(near - py) <= 0.01 + 0.05 * near:
+                    left.remove(near)
             x['part_yy'] = py
-            x['fields']['_yy_hint'] = py
+        rest = [x for x in xs if not x['part_yy']]
+        if rest and len(left) == len(rest):
+            # bigger marker (length per garment) = bigger part
+            def size(x):
+                f = x['fields']
+                if f.get('inch') is not None and f.get('gqty'):
+                    return ((f.get('marker_y') or 0) * 36 + f['inch']) / f['gqty'] / 36
+                return _area(x) / 1e6
+
+            for x, v in zip(sorted(rest, key=size, reverse=True), sorted(left, reverse=True)):
+                x['part_yy'] = v
+        for x in xs:
+            x['fields']['_yy_hint'] = x['part_yy']
         scale = (ln['yy'] / ln['iyy']) if ln and ln.get('iyy') and ln.get('yy') else 1
         xs.sort(key=lambda x: -(x.get('part_yy') or 0))       # biggest part = main sheet
         base = xs[0]['title'].split(' (')[0]
         for k, x in enumerate(xs):
-            x['title'] = base if k == 0 else f'{base} ({k + 1})'
+            x['title'] = base if k == 0 else (f'{base} (BINDING)' if x['fields'].get('_binding') and
+                                              not xs[0]['fields'].get('_binding') else f'{base} ({k + 1})')
             x['scale'] = scale
             x['part_main'] = k == 0
     order = []
