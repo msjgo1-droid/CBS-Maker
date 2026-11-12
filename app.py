@@ -34,6 +34,9 @@ T = {
                   'Prices (internal/open) are never changed. Number formats, subtotals and CIF check are done too.',
                   'Chỉ tải CBS nội bộ. Tab ngoài cùng bên trái (mới nhất) được so với tab giai đoạn trước; thay đổi (giá, định mức, '
                   'hao hụt, CIF, CM) được ghi vào ô REMARK bằng **chữ đỏ**, sau nội dung sẵn có. Giá không bao giờ bị sửa.'),
+    'upd_open0': ('올린 파일에서 이미 Open YY가 0인 항목 (ACTUAL LOSS 칸이 비어 있어서 Open 금액이 빠져 있어요 — 앱은 값을 바꾸지 않아요)',
+                  'Open YY already 0 in the uploaded file (ACTUAL LOSS empty, so the open cost is missing — the app changes no values)',
+                  'Open YY đã = 0 trong file tải lên (ACTUAL LOSS trống — app không sửa giá trị)'),
     'upd_run': ('▶ 업데이트 실행', '▶ Update', '▶ Cập nhật'),
     'upd_prev': ('비교한 이전 단계', 'Compared with', 'So với'),
     'upd_none': ('이전 단계 탭(날짜가 다른 탭)이 없어서 비교하지 못했어요', 'No previous-stage tab (another date) to compare with',
@@ -613,6 +616,8 @@ with tab_upd:
                         st.warning(f"{b_['variant']} · {t('upd_none')}")
                     if b_['gone']:
                         st.warning(t('upd_gone') + ': ' + ', '.join(b_['gone']))
+                if rp.get('open0'):
+                    st.error(t('upd_open0') + ': ' + ', '.join(rp['open0']))
                 if rp['notes']:
                     st.markdown(f"**{t('upd_notes')}**")
                     st.dataframe(pd.DataFrame([{'': x['variant'], 'Cell': x['cell'], 'Item': x['item'],

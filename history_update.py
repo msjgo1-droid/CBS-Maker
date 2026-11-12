@@ -75,6 +75,13 @@ def compare(wv, ws_cur, cur_blk, heather):
                 ch.append(f'{lab} {_fmt(y, money)}→{_fmt(x, money)}{arrow}')
         if ch:
             notes.append((a['row'], f"{tag} {', '.join(ch)}", 'changed', a))
+    # open side empty while the internal side is filled -> the open FOB is missing that cost (not something we did)
+    for a in cur_blk['lines']:
+        va = _vals(ws_cur, cur_blk, a)
+        if (va['i_yy'] or 0) > 0 and (va['i_price'] or 0) > 0 and not (va['b_yy'] or 0):
+            al = ws_cur.cell(a['row'], cur_blk['cols']['b_actual_loss']).value if 'b_actual_loss' in cur_blk['cols'] else 'x'
+            hint = ' (ACTUAL LOSS 빈칸)' if al in (None, '') else ''
+            notes.append((a['row'], f'⚠ Open YY 0{hint} — Open 금액이 0으로 계산돼요', 'open0', a))
     gone = [b for j, b in enumerate(prev_blk['lines']) if j not in set(m.values()) and (b['yy'] or b['price'])]
     # CM
     if cur_blk.get('cm_row') and (cur_blk.get('cm') or 0) != (prev_blk.get('cm') or 0):
@@ -86,7 +93,7 @@ def compare(wv, ws_cur, cur_blk, heather):
 def update(data, name, today=None):
     """Return (new_bytes, report)."""
     from engine import missing_values, cif_marks, clean_name
-    rep = dict(blocks=[], notes=[], skipped=[], warnings=[])
+    rep = dict(blocks=[], notes=[], skipped=[], warnings=[], open0=[])
     calc = data
     if missing_values(data) > 0.3:
         from xlimages import recalc_xlsx
@@ -121,6 +128,8 @@ def update(data, name, today=None):
             new_t = ('\n' if old_t else '') + note
             font = fc.font
             cells[ref] = ('r', (old_t, new_t, font.name if font else None, font.sz if font else None), None)
+            if kind == 'open0':
+                rep['open0'].append(f"{(line or {}).get('detail') or ''} ({L(rc)}{row})")
             rep['notes'].append(dict(variant='Heather' if b['heather'] else 'Solid', cell=ref,
                                      item=(line or {}).get('detail') or (line or {}).get('item') or 'CM',
                                      before=old_t, note=note))
