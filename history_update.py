@@ -75,6 +75,13 @@ def compare(wv, ws_cur, cur_blk, heather):
                 ch.append(f'{lab} {_fmt(y, money)}→{_fmt(x, money)}{arrow}')
         if ch:
             notes.append((a['row'], f"{tag} {', '.join(ch)}", 'changed', a))
+        # internal YY up but open YY kept: fine for a closed MNMK, wrong if fit comment / spec made it bigger
+        if va['i_yy'] and vb['i_yy'] and va['b_yy'] is not None and vb['b_yy'] is not None \
+                and round(va['i_yy'], 4) > round(vb['i_yy'], 4) and round(va['b_yy'], 4) == round(vb['b_yy'], 4):
+            ratio = vb['b_yy'] / vb['i_yy'] if vb['i_yy'] else None
+            sug = f", last ratio x{ratio:.4f} -> Open YY {va['i_yy'] * ratio:.4f}" if ratio else ''
+            notes.append((a['row'], f"⚠ YY up vs {_short_tab(title)} but Open YY unchanged - double check "
+                                    f"(if fit comment/spec, raise Open YY{sug})", 'yy_up', a))
     # open side empty while the internal side is filled -> the open FOB is missing that cost (not something we did)
     for a in cur_blk['lines']:
         va = _vals(ws_cur, cur_blk, a)

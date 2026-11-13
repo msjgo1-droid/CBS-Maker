@@ -158,6 +158,6 @@ def previous_stage_block(wv, heather=False):
                         fob = v
             cands.append((('HEATHER' in body) == heather, si, ws.title, r0, r1, fob))
         if cands:
-            best = sorted(cands, key=lambda x: (not x[0], -x[3]))[0]
+            best = sorted(cands, key=lambda x: (not x[0], x[3]))[0]     # top block = that stage's latest
             return best[1:]
     return None
