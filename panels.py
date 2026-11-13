@@ -200,6 +200,10 @@ def crop_marker(data, pad=3):
     else:
         # dark pieces (navy, dark green) can break the background run -> widen to the pieces on the same rows
         pb = _crop_by_pieces(a, pad)
+        area_ = lambda b: max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+        if pb and pb[0] >= box[0] - 5 and pb[1] >= box[1] - 5 and pb[2] <= box[2] + 5 and pb[3] <= box[3] + 5 \
+                and area_(pb) < 0.6 * area_(box) and pb[1] - box[1] > 40 and _colours(a, pb) >= 6 > _colours(a, box):
+            box, pb = pb, None          # the 'background' box took the white table above the marker too
         inside = False
         if pb:
             area = lambda b: max(0, b[2] - b[0]) * max(0, b[3] - b[1])

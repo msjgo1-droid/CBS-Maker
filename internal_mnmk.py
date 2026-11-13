@@ -29,8 +29,15 @@ def _grid_cells(im, max_rows=6):
     """Cells of the MNMK table (rows between dark horizontal rules, split at dark vertical rules)."""
     import numpy as np
     g = np.asarray(im.convert('L')).astype(int)
-    dark = g < 110
     H, W = g.shape
+    # dark or light grey table rules: keep the reading that finds more table rows in the upper part
+    score = lambda rs: sum(1 for r in rs if len(r) >= 2 and r[0][1] < H * 0.4)
+    cands = [_grid_rows(g < 110, max_rows), _grid_rows(g < 200, max_rows)]
+    return max(cands, key=score)
+
+
+def _grid_rows(dark, max_rows):
+    H, W = dark.shape
     hl = [y for y in range(H) if dark[y].mean() > 0.45]
     groups = []
     for y in hl:
@@ -53,6 +60,11 @@ def _grid_cells(im, max_rows=6):
             else:
                 vg.append([x])
         xs = [(q[0], q[-1]) for q in vg]
+        # screenshot cut through the table: the image edge closes the last / first cell
+        if xs and xs[-1][1] < W - 20:
+            xs.append((W - 1, W - 1))
+        if xs and xs[0][0] > 20:
+            xs.insert(0, (0, 0))
         row = [(c1 + 1, top, d0 - 1, bot) for (c0, c1), (d0, d1) in zip(xs, xs[1:]) if d0 - c1 > 5]
         if row:
             rows.append(row)
@@ -122,7 +134,11 @@ def _grid_read(pytesseract, png):
         for k, t in enumerate(low):
             nxt = row[k + 1] if k + 1 < len(row) else None
             if not nxt:
-                continue
+                # label and value in one cell ('Efficiency      80.29'): the right half holds the value
+                x0, y0, x1, y1 = row[k]
+                if x1 - x0 < 80:
+                    continue
+                nxt = (x0 + (x1 - x0) // 2, y0, x1, y1)
             if 'width' in t:
                 emit('width', _cell_votes(pytesseract, im, nxt, r'(\d{2,3})'))
             elif re.search(r'ffic|ency|iency|olan|cienc', t):
@@ -165,6 +181,7 @@ def ocr_text(png):
         def need():
             f = parse_fields(txt)
             return [k for k in ('width', 'eff', 'pqty') if not f.get(k)] + \
+                (['eff2'] if f.get('eff') and len(str(f['eff']).split('.')[-1]) < 2 else []) + \
                 ([] if f.get('inch') is not None or f.get('yy') else ['len'])
         if need() or not parse_fields(txt).get('gqty'):
             try:
@@ -290,7 +307,7 @@ def parse_fields(text):
     t = text or ''
     g = lambda pat, f=lambda x: x: (lambda m: f(m.group(1)) if m else None)(re.search(pat, t, re.I | re.S))
     out = dict(
-        width=g(r'(?:WIDTH|IDTH)\W{0,4}(\d{2,3})\s*["”]?', lambda x: f'{x}"') or
+        width=g(r'(?:WIDTH|IDTH)\W{0,4}(\d{2,3})(?![\d.])\s*["”]?', lambda x: f'{x}"') or
         g(r'\bW\w{3,5}\s*[:=]\s*(\d{2,3})\s*["”]', lambda x: f'{x}"'),
         eff=g(r'Effic\w*\s*[:\-]?\s*(\d{2}\.\d{1,2})', float) or
             g(r'(?m)FAB DETAIL[^\n]*?\s([5-9]\d\.\d{2})\s*$', float),
@@ -338,12 +355,38 @@ def parse_fields(text):
         out['inch_cands'] = base_inch + [x for x, _ in ln.most_common() if x >= 0.1 and x not in base_inch]
         if out['inch_cands']:
             out['inch'] = out['inch_cands'][0]
+    # impossible readings count as not read (17.37% efficiency = '7' read as '1')
+    if out['eff'] is not None and not 35 <= out['eff'] <= 99.5:
+        out['eff'] = None
+    if out['pqty'] and out['gqty'] and (out['pqty'] < out['gqty'] or out['pqty'] % out['gqty']):
+        out['pqty'] = None
     # table cells read one by one (grid) - fills what the whole-picture read did not find
+    from collections import Counter
     gw, ge, gg, gp, gy, gl = (_gvotes(t, k) for k in ('width', 'eff', 'gq', 'pq', 'yy', 'len'))
+    # cuttable width is 30"..200" and must be read more than once ('54"' in red read as 04 / 34)
+    gw = Counter({k: v for k, v in gw.items() if k.isdigit() and 30 <= int(k) <= 200 and v >= 2})
+    if out['width'] and not 30 <= int(out['width'].rstrip('"')) <= 200:
+        out['width'] = None
     if gw and not out['width']:
         out['width'] = f'{gw.most_common(1)[0][0]}"'
-    if ge and ge.most_common(1)[0][1] >= 2 and not out['eff']:
-        out['eff'] = float(ge.most_common(1)[0][0])
+    # efficiency: every plausible 'Efficiency nn.nn' in the text reads (weight 5) + the cell votes
+    from collections import Counter
+    ce = Counter()
+    for v in re.findall(r'Effic\w*\s*[:\-]?\s*(\d{2}\.\d{2})', t):
+        if 35 <= float(v) <= 99.5:
+            ce[v] += 5
+    for k, v in ge.items():
+        if 35 <= float(k) <= 99.5:
+            ce[k] += v
+    if ce and (max(ce.values()) >= 2):
+        top = max(ce, key=ce.get)
+        if not out['eff']:
+            out['eff'] = float(top)
+        elif len(str(out['eff']).split('.')[-1]) < 2:
+            # 80.2 (last digit lost) -> the 80.2x reading with most votes
+            same = {k: v for k, v in ce.items() if k.startswith(f"{out['eff']:.1f}")}
+            if same:
+                out['eff'] = float(max(same, key=same.get))
     if gy and not out['yy']:
         out['yy'] = float(gy.most_common(1)[0][0])
     if gp:
@@ -449,6 +492,11 @@ def _is_marker_pic(p):
     return _colours(a, (0, 0, a.shape[1] - 1, a.shape[0] - 1)) >= 6
 
 
+def _yy_fits(l, y):
+    vals = [l.get('iyy')] + list(l.get('parts') or [])
+    return any(v and abs(v - y) <= 0.01 * v + 0.0015 for v in vals)
+
+
 def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=None, other_tabs=True):
     """Return [{title, block, fields, ok, tab}] — block has the keys panels.build_from_mnmk expects.
     MNMK pictures sit right of the costing, top rows. When the current tab has none, the newest
@@ -500,14 +548,27 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
             ln = near[0] if near else None
         if ln is None and len(fabrics) == 1:
             ln = fabrics[0]
+        if ln is not None and f.get('yy') and not _yy_fits(ln, f['yy']):
+            # picture placed under another fabric's header (Self + CF facing pasted side by side in col R):
+            # its own YY (0.034) names the fabric line it belongs to
+            alt = [l for l in fabrics if l is not ln and _yy_fits(l, f['yy'])]
+            if alt:
+                ln = alt[0]
+                hcol = ('line', fabrics.index(ln))
+                lc = _codes(ln['detail']) | _codes(ln['remark'])
+                head = headers.get(next((c for c in headers if any(
+                    a == b or (min(len(a), len(b)) >= 6 and (a.startswith(b) or b.startswith(a)))
+                    for a in _codes(headers[c]) for b in lc)), None), head)
         base = (ln['item'] or ln['detail']) if ln else (head.split('\n')[0][:25] or f'Fabric {len(out) + 1}')
-        base = re.sub(r'[\[\]:*?/\\]', ' ', base).strip()[:28]
+        base = re.sub(r'\s+', ' ', re.sub(r'[\[\]:*?/\\]', ' ', base)).strip()[:28]
         n = used_titles.get(base, 0) + 1
         used_titles[base] = n
         title = base if n == 1 else f'{base} ({n})'
         if not f.get('width'):
             # tiny CAD status bar unreadable -> cuttable width written in the fabric header ('60" CW')
-            mw = re.search(r'(\d{2,3})\s*(?:"|”|\'\'|INCH|IN)?\s*C\.?W\b', head.upper()) or \
+            mw = re.search(r'CUTTABLE\W*\d{2,3}(?:\.\d)?\s*CM\W{0,3}(\d{2,3})', head.upper()) or \
+                re.search(r'(\d{2,3})\s*(?:"|”|\'\'|INCH|IN)?\s*C\.?W\b', head.upper()) or \
+                re.search(r'\bC\.?W\.?\s*:?\s*(\d{2,3})\s*(?:"|”)', head.upper()) or \
                 re.search(r'(\d{2,3})\s*C\.?W\b', ((ln or {}).get('remark') or '') + ' ' + ((ln or {}).get('detail') or ''), re.I)
             if mw:
                 f['width'] = f'{mw.group(1)}"'
@@ -573,6 +634,8 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
     order = []
     for xs in groups.values():
         order += [x for x in xs if not x.get('_drop')]
+    # sheets in the internal's fabric order (Self first), whatever column the picture was pasted in
+    order.sort(key=lambda x: fabrics.index(x['_line']) if x.get('_line') in fabrics else len(fabrics))
     out[:] = order
     # garment Q'ty: the marker whose reading is unambiguous sets the reference for the others
     ref = None
@@ -586,8 +649,10 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
         x['ok'] = solve_marker(f, f.get('_yy_hint'), ref) if f else None
         if f and f.get('gqty') and f.get('pqty_cands'):
             # panels = garments x pieces per garment -> the reading divisible by Garment Q'ty (176 not 178)
-            ok = [p for p in f['pqty_cands'] if p % f['gqty'] == 0]
-            f['pqty'] = ok[0] if ok else f['pqty']
+            ok = [p for p in f['pqty_cands'] if p % f['gqty'] == 0 and p >= f['gqty']]
+            f['pqty'] = ok[0] if ok else None
+        if f and f.get('gqty') and f.get('pqty') and (f['pqty'] % f['gqty'] or f['pqty'] < f['gqty']):
+            f['pqty'] = None            # can't be right - left empty for the user (warning)
         x['block'].update(gqty=f.get('gqty'), marker_y=f.get('marker_y'), marker_in=f.get('inch'),
                           width=f.get('width'), eff=f.get('eff'), pqty=f.get('pqty'))
     return out

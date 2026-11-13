@@ -85,6 +85,13 @@ def read_internal(path, filename=''):
                     v = _num(wsv.cell(r, cols['b_ttl']).value)
                     if v is not None and v > 1:
                         fob, fob_cell = v, ws.cell(r, cols['b_ttl']).coordinate
+        inet = None                              # internal cost (Net row, internal TTL column)
+        if net and 'i_ttl' in cols:
+            for r in range(net.row, min(net.row + 3, r1) + 1):
+                v = _num(wsv.cell(r, cols['i_ttl']).value)
+                if v is not None and v > 1:
+                    inet = v
+                    break
         notes = []
         for row in wsv.iter_rows(min_row=r0, max_row=r1, max_col=22):
             for c in row:
@@ -105,7 +112,8 @@ def read_internal(path, filename=''):
         m = re.search(r'COLORWAY\s+([A-Z ]+)', hd_stage.upper())
         if m:
             label = m.group(1).strip()
-        blocks.append(dict(idx=i, r0=r0, r1=r1, fob=fob, fob_cell=fob_cell, notes=notes,
+        blocks.append(dict(idx=i, r0=r0, r1=r1, fob=fob, fob_cell=fob_cell, notes=notes, inet=inet,
+                           margin=((fob - inet) / fob) if fob and inet else None,
                            submitted=submitted, stage_hdr=hd_stage, date_hdr=hd_date,
                            heather='HEATHER' in body, label=label, warn=warn,
                            option=_s(wsv.cell(hdr.row - 1, 10).value)))

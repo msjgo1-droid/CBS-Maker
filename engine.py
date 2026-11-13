@@ -57,10 +57,14 @@ def default_block_map(info, main_titles):
         return (sub or pool[-1:] or act)[0]
     def dearest(b):
         # same stage, same solid/heather, only the COLORWAY differs (e.g. BLACK vs BLACK SESAME + VARSITY)
-        # -> the buyer CBS goes out with the colorway whose open price is the highest
-        same = [x for x in blocks if x['heather'] == b['heather'] and x.get('stage_hdr') == b.get('stage_hdr')
-                and x.get('date_hdr') == b.get('date_hdr') and 'COLORWAY' in str(x.get('option') or '').upper()]
+        # -> the buyer CBS goes out with the colorway whose internal margin rate is the highest
+        #    ((open FOB - internal Net) / open FOB); open price breaks a tie / stands in when Net is unreadable
+        # (stage header is written differently between blocks - 'GTM2/P1/S28' vs 'P1/S28' - so same date is enough)
+        same = [x for x in blocks if x['heather'] == b['heather'] and x.get('date_hdr') == b.get('date_hdr')
+                and 'COLORWAY' in str(x.get('option') or '').upper()]
         if len(same) > 1 and len({str(x.get('option')) for x in same}) > 1 and all(x.get('fob') for x in same):
+            if all(x.get('margin') is not None for x in same):
+                return max(same, key=lambda x: (round(x['margin'], 6), x['fob']))
             return max(same, key=lambda x: x['fob'])
         return b
     out = {}
@@ -273,6 +277,22 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
         im = read_internal_mnmk(internal, wsv, lines0, info['gender'], other_tabs=False)
         if im:
             rep['pic_choice'] = choose_pictures(out, im, pics or {}, crop)
+            # a fabric of the internal with its MNMK but no sheet in the buyer file (SELF left out by an
+            # older run) -> its sheet is made here, in the internal's fabric order
+            miss = [x for x in im if not x.get('_used') and x.get('part_main') is not False and x.get('_line')
+                    and x['title'] not in out.sheetnames]
+            if miss:
+                layout = openpyxl.load_workbook(os.path.join(HERE, 'assets', 'panel_layout.xlsx')).worksheets[0]
+                for x in miss:
+                    k = im.index(x)
+                    nxt = next((y['title'] for y in im[k + 1:] if y['title'] in out.sheetnames), None)
+                    first = next((i for i, s_ in enumerate(out.worksheets) if is_panel_sheet(s_)), None)
+                    idx = out.sheetnames.index(nxt) if nxt else None
+                    if idx is None and k == 0 and first is not None:
+                        idx = first
+                    x['block']['style'] = info.get('style')
+                    build_from_mnmk(out, layout, x['title'], x['block'], index=idx, crop=crop is not False)
+                    rep['warnings'].append(W('sheet_added', sheet=x['title']))
             apply_parts(out, im, crop, rep['warnings'], info.get('style'))
             rep['internal_mnmk'] = [dict(title=x['title'], line=x['line'], ok=x['ok'],
                                          **{k: x['fields'].get(k) for k in ('width', 'eff', 'gqty', 'pqty', 'yy', 'direction')})
@@ -412,6 +432,7 @@ def choose_pictures(out, im, pics, crop):
         if not x:
             continue
         used.add(id(x))
+        x['_used'] = True
         old = [i for i in ws._images if hasattr(i.anchor, '_from') and i.anchor._from.row >= 6]
         prev_png = img_bytes(max(old, key=lambda i: (i.width or 0) * (i.height or 0))) if old else None
         int_png = x['block']['image']
