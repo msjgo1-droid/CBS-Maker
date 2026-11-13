@@ -16,8 +16,8 @@ from cbs_format import normalize_bytes, set_cells, subtotal_plan, highlight_cell
 from internal import read_internal, previous_stage_block, tab_date
 
 FIELDS = [  # (column key, label, money?)
-    ('i_price', '단가', True), ('i_yy', 'YY', False), ('i_loss', 'LOSS', False),
-    ('b_cif', 'CIF', True), ('b_price', 'Open 단가', True), ('b_yy', 'Open YY', False), ('b_loss', 'Open LOSS', False),
+    ('i_price', 'Price', True), ('i_yy', 'YY', False), ('i_loss', 'LOSS', False),
+    ('b_cif', 'CIF', True), ('b_price', 'Open Price', True), ('b_yy', 'Open YY', False), ('b_loss', 'Open LOSS', False),
 ]
 
 
@@ -55,13 +55,13 @@ def compare(wv, ws_cur, cur_blk, heather):
     si, title, r0, r1, _fob = pv
     ws_prev = wv.worksheets[si]
     prev_blk = read_internal_block(ws_prev, r0, r1)
-    tag = f'[{_short_tab(title)} 대비]'
+    tag = f'[vs {_short_tab(title)}]'
     m = match_prev_lines(cur_blk['lines'], prev_blk['lines'])
     notes = []
     for i, a in enumerate(cur_blk['lines']):
         if i not in m:
             if a['yy'] or a['price']:
-                notes.append((a['row'], f'{tag} 신규 항목', 'new', a))
+                notes.append((a['row'], f'{tag} New item', 'new', a))
             continue
         b = prev_blk['lines'][m[i]]
         va, vb = _vals(ws_cur, cur_blk, a), _vals(ws_prev, prev_blk, b)
@@ -80,8 +80,8 @@ def compare(wv, ws_cur, cur_blk, heather):
         va = _vals(ws_cur, cur_blk, a)
         if (va['i_yy'] or 0) > 0 and (va['i_price'] or 0) > 0 and not (va['b_yy'] or 0):
             al = ws_cur.cell(a['row'], cur_blk['cols']['b_actual_loss']).value if 'b_actual_loss' in cur_blk['cols'] else 'x'
-            hint = ' (ACTUAL LOSS 빈칸)' if al in (None, '') else ''
-            notes.append((a['row'], f'⚠ Open YY 0{hint} — Open 금액이 0으로 계산돼요', 'open0', a))
+            hint = ' (ACTUAL LOSS empty)' if al in (None, '') else ''
+            notes.append((a['row'], f'⚠ Open YY 0{hint} - open cost calculated as 0', 'open0', a))
     gone = [b for j, b in enumerate(prev_blk['lines']) if j not in set(m.values()) and (b['yy'] or b['price'])]
     # CM
     if cur_blk.get('cm_row') and (cur_blk.get('cm') or 0) != (prev_blk.get('cm') or 0):

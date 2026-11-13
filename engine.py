@@ -650,9 +650,9 @@ def cif_marks(rep, iname, calc_bytes, extra_hist=None):
             nref = f"{get_column_letter(l['note_col'])}{l['row']}" if l.get('note_col', 1) > 1 else None
             if nref and wv[nref].value not in (None, ''):
                 nref = None                                     # never overwrite a remark
-            why = {'missing': 'CIF 빠짐', 'differs': 'CIF 확인', 'high': 'CIF 높음', 'low': 'CIF 낮음'}[x['why']]
+            why = {'missing': 'CIF missing', 'differs': 'Check CIF', 'high': 'CIF high', 'low': 'CIF low'}[x['why']]
             out.append(dict(ref=ref, note_ref=nref, empty=not l['cif'],
-                            note=f"⚠ {why}: {x['cif'] or 0:g} → 보통 {x['usual']:g} (다른 스타일 {x['seen']})"))
+                            note=f"⚠ {why}: {x['cif'] or 0:g} → usually {x['usual']:g} (other styles {x['seen']})"))
     rep['warnings'].append(W('cif_bad', n=len(issues)))
     return out
 
