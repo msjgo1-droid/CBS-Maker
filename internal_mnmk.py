@@ -24,6 +24,123 @@ def _codes(t):
     return {x for x in re.split(r'[\s/,()#:]+', _s(t).upper()) if len(x) >= 5 and re.search(r'\d', x)}
 
 
+
+def _grid_cells(im, max_rows=6):
+    """Cells of the MNMK table (rows between dark horizontal rules, split at dark vertical rules)."""
+    import numpy as np
+    g = np.asarray(im.convert('L')).astype(int)
+    dark = g < 110
+    H, W = g.shape
+    hl = [y for y in range(H) if dark[y].mean() > 0.45]
+    groups = []
+    for y in hl:
+        if groups and y - groups[-1][-1] <= 2:
+            groups[-1].append(y)
+        else:
+            groups.append([y])
+    ys = [(q[0], q[-1]) for q in groups]
+    rows = []
+    for (a0, a1), (b0, b1) in zip(ys, ys[1:]):
+        top, bot = a1 + 1, b0 - 1
+        if bot - top < 6:
+            continue
+        band = dark[top:bot + 1]
+        vx = [x for x in range(W) if band[:, x].mean() > 0.8]
+        vg = []
+        for x in vx:
+            if vg and x - vg[-1][-1] <= 2:
+                vg[-1].append(x)
+            else:
+                vg.append([x])
+        xs = [(q[0], q[-1]) for q in vg]
+        row = [(c1 + 1, top, d0 - 1, bot) for (c0, c1), (d0, d1) in zip(xs, xs[1:]) if d0 - c1 > 5]
+        if row:
+            rows.append(row)
+        if len(rows) >= max_rows:
+            break
+    return rows
+
+
+def _cell_votes(pytesseract, im, box, pat, wl='0123456789.'):
+    """Read one small value cell many ways (channel, scale, blur, resampling, threshold, red text) and count
+    the answers that fit the pattern; stops early once one answer clearly wins."""
+    import numpy as np
+    from collections import Counter
+    from PIL import ImageFilter
+    c = im.crop(box)
+    a = np.asarray(c.convert('RGB')).astype(int)
+    red = (a[..., 0] > 140) & (a[..., 1] < 120) & (a[..., 2] < 120)
+    bases = [Image.fromarray(a.min(axis=2).astype('uint8')), Image.fromarray(a.mean(axis=2).astype('uint8'))]
+    if red.sum() > 3:
+        bases.insert(0, Image.fromarray(np.where(red, 0, 255).astype('uint8')))
+    bases.append(c.convert('L'))
+    cnt = Counter()
+    for S in (8, 10, 6):
+        for base in bases:
+            for rs in (Image.LANCZOS, Image.BICUBIC):
+                g = base.resize((base.width * S, base.height * S), rs)
+                for v in (g.filter(ImageFilter.GaussianBlur(S / 2)), g.filter(ImageFilter.GaussianBlur(S / 4)), g):
+                    for th in (None, 170):
+                        w = v.point(lambda p, th=th: 255 if p > th else 0) if th else v
+                        pad = Image.new('L', (w.width + 60, w.height + 60), 255)
+                        pad.paste(w, (30, 30))
+                        t = pytesseract.image_to_string(
+                            pad, config=f'--psm 7 --dpi 300 -c tessedit_char_whitelist={wl}')
+                        m = re.fullmatch(pat, t.replace(' ', '').strip())
+                        if m:
+                            cnt[m.group(1) if m.lastindex == 1 else m.groups()] += 1
+                top = cnt.most_common(2)
+                if top and (top[0][1] >= 12 or (sum(cnt.values()) >= 10 and
+                                                (len(top) < 2 or top[0][1] >= 2 * top[1][1]))):
+                    return cnt
+    return cnt
+
+
+def _grid_read(pytesseract, png):
+    """MNMK screenshot of our panel sheet: read every table cell on its own; the values right of the labels
+    (CUTTABLE WIDTH, TOTAL MARKER, Efficiency, GARMENT Q'TY | yy, Panel Q'ty) are read many ways and voted.
+    Returns text markers '@@G:key@@ value' (one per vote)."""
+    im = Image.open(io.BytesIO(png)).convert('RGB')
+    rows = _grid_cells(im)
+    out = ''
+
+    def label(box):
+        c = im.crop(box).convert('L')
+        c = c.resize((c.width * 4, c.height * 4), Image.LANCZOS)
+        pad = Image.new('L', (c.width + 40, c.height + 40), 255)
+        pad.paste(c, (20, 20))
+        return pytesseract.image_to_string(pad, config='--psm 7').strip()
+
+    def emit(key, cnt):
+        nonlocal out
+        for v, n in cnt.items():
+            v = ' '.join(v) if isinstance(v, tuple) else v
+            out += f'\n@@G:{key}@@ {v}' * n
+    for ri, row in enumerate(rows):
+        labs = [label(b) for b in row]
+        low = [x.lower() for x in labs]
+        for k, t in enumerate(low):
+            nxt = row[k + 1] if k + 1 < len(row) else None
+            if not nxt:
+                continue
+            if 'width' in t:
+                emit('width', _cell_votes(pytesseract, im, nxt, r'(\d{2,3})'))
+            elif re.search(r'ffic|ency|iency|olan|cienc', t):
+                emit('eff', _cell_votes(pytesseract, im, nxt, r'(\d{2}\.\d{2})%?'))
+            elif re.search(r'panel', t):
+                emit('pq', _cell_votes(pytesseract, im, nxt, r'(\d{1,4})'))
+            elif re.search(r'garm|q.?ty', t) and 'panel' not in t:
+                emit('gq', _cell_votes(pytesseract, im, nxt, r'(\d{1,3})'))
+                if k + 2 < len(row):
+                    emit('yy', _cell_votes(pytesseract, im, row[k + 2], r'(\d?\.\d{2,4})'))
+        # TOTAL MARKER LENGTH: '6 Y 7.45 IN' (one cell, or split in cells)
+        for k, t in enumerate(labs):
+            if re.search(r'\bIN\b', t) or re.search(r'\d\s*Y\b', t):
+                emit('len', _cell_votes(pytesseract, im, row[k], r'(\d{1,2})Y(\d{1,2}\.\d{1,3})(?:IN|I|N)?',
+                                        '0123456789.YIN'))
+    return out
+
+
 _OCR_CACHE = {}
 PROGRESS = None          # app sets a callback(i, n) to show 'reading MNMK picture i/n'
 
@@ -49,6 +166,11 @@ def ocr_text(png):
             f = parse_fields(txt)
             return [k for k in ('width', 'eff', 'pqty') if not f.get(k)] + \
                 ([] if f.get('inch') is not None or f.get('yy') else ['len'])
+        if need() or not parse_fields(txt).get('gqty'):
+            try:
+                txt += _grid_read(pytesseract, png)            # table cells one by one, voted
+            except Exception:                                  # noqa
+                pass
         if [k for k in need() if k in ('width', 'eff', 'pqty')] or not parse_fields(txt).get('gqty'):
             # small screenshot: read the table above the marker on its own, bigger
             try:
@@ -159,6 +281,11 @@ def _vote(t, lab):
     return c.most_common(1)[0][0] if c else None
 
 
+def _gvotes(t, key):
+    from collections import Counter
+    return Counter(re.findall(r'@@G:%s@@ ([^\n]+)' % key, t or ''))
+
+
 def parse_fields(text):
     t = text or ''
     g = lambda pat, f=lambda x: x: (lambda m: f(m.group(1)) if m else None)(re.search(pat, t, re.I | re.S))
@@ -211,6 +338,35 @@ def parse_fields(text):
         out['inch_cands'] = base_inch + [x for x, _ in ln.most_common() if x >= 0.1 and x not in base_inch]
         if out['inch_cands']:
             out['inch'] = out['inch_cands'][0]
+    # table cells read one by one (grid) - fills what the whole-picture read did not find
+    gw, ge, gg, gp, gy, gl = (_gvotes(t, k) for k in ('width', 'eff', 'gq', 'pq', 'yy', 'len'))
+    if gw and not out['width']:
+        out['width'] = f'{gw.most_common(1)[0][0]}"'
+    if ge and ge.most_common(1)[0][1] >= 2 and not out['eff']:
+        out['eff'] = float(ge.most_common(1)[0][0])
+    if gy and not out['yy']:
+        out['yy'] = float(gy.most_common(1)[0][0])
+    if gp:
+        out['pqty_cands'] = ([out['pqty']] if out['pqty'] else []) + \
+            [int(v) for v, _ in gp.most_common() if int(v) != out['pqty']]
+        out['pqty'] = out['pqty'] or out['pqty_cands'][0]
+    if gg:
+        out['gqty_cands'] = ([out['gqty']] if out['gqty'] else []) + \
+            [int(v) for v, _ in gg.most_common() if int(v) > 0 and int(v) != out['gqty']]
+        if not out['gqty'] and gg.most_common(1)[0][1] >= 3:
+            out['gqty'] = int(gg.most_common(1)[0][0])
+    lens = None
+    if gl:
+        lens = [tuple(v.split()) for v, _ in gl.most_common()]
+        lens = [(y, i) for y, i in lens if int(y) <= 40 and 0 <= float(i) < 36] or None
+    if lens:
+        base = list(out.get('inch_cands') or ([out['inch']] if out['inch'] is not None else []))
+        out['inch_cands'] = base + [float(i) for _, i in lens if float(i) not in base]
+        if out['inch'] is None:
+            out['inch'] = out['inch_cands'][0]
+            out['yards_cands'] = sorted({int(y) for y, _ in lens})
+            if out['marker_y_read'] is None and len(out['yards_cands']) == 1:
+                out['marker_y_read'] = out['yards_cands'][0]
     up = t.upper()
     if 'RANDOM' in up:
         out['direction'] = '2 WAY RANDOM / 1PC 1 WAY'
@@ -237,6 +393,10 @@ def marker_solutions(f, yy_hint=None):
             if y >= 0:
                 sols.append((abs((y + inch / 36) / q - yy) / yy, q, y, inch))
     sols = [x for x in sols if x[0] < 0.03]
+    if f.get('yards_cands') and any(x[2] in f['yards_cands'] for x in sols):
+        sols = [x for x in sols if x[2] in f['yards_cands']]       # yards digit read (maybe several readings)
+    if f.get('gqty_cands') and not f.get('gqty') and any(x[1] in f['gqty_cands'] for x in sols):
+        sols = [x for x in sols if x[1] in f['gqty_cands']]
     if f.get('marker_y_read') is not None and any(x[2] == f['marker_y_read'] for x in sols):
         sols = [x for x in sols if x[2] == f['marker_y_read']]      # yards read in TOTAL MARKER row
     return sols
@@ -324,11 +484,6 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
             hn = re.sub(r'[^a-z]', '', head.lower())
             ln = next((l for l in fabrics if re.sub(r'[^a-z]', '', (l['item'] or l['detail']).lower())
                        and re.sub(r'[^a-z]', '', (l['item'] or l['detail']).lower()) in hn), None)
-        base = (ln['item'] or ln['detail']) if ln else (head.split('\n')[0][:25] or f'Fabric {len(out) + 1}')
-        base = re.sub(r'[\[\]:*?/\\]', ' ', base).strip()[:28]
-        n = used_titles.get(base, 0) + 1
-        used_titles[base] = n
-        title = base if n == 1 else f'{base} ({n})'
         png = p.get('_png') or (p['data'] if p['ext'] in ('png', 'jpg', 'jpeg') else None)
         if png is None:
             from xlimages import to_png
@@ -337,6 +492,19 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
         f = parse_fields(_t) if png else {}
         if _t:
             f['_binding'] = bool(re.search(r'BINDING', _t.split('@@')[0], re.I))
+        if ln is None and f.get('yy'):
+            # picture YY (e.g. 0.776) = internal YY of one fabric line -> that line (Self), not the fabric code
+            near = [l for l in fabrics if l.get('iyy') and abs(l['iyy'] - f['yy']) <= 0.01 * l['iyy'] + 0.0015]
+            near += [l for l in fabrics if any(abs(pp - f['yy']) <= 0.01 * pp + 0.0015 for pp in (l.get('parts') or []))
+                     and l not in near]
+            ln = near[0] if near else None
+        if ln is None and len(fabrics) == 1:
+            ln = fabrics[0]
+        base = (ln['item'] or ln['detail']) if ln else (head.split('\n')[0][:25] or f'Fabric {len(out) + 1}')
+        base = re.sub(r'[\[\]:*?/\\]', ' ', base).strip()[:28]
+        n = used_titles.get(base, 0) + 1
+        used_titles[base] = n
+        title = base if n == 1 else f'{base} ({n})'
         if not f.get('width'):
             # tiny CAD status bar unreadable -> cuttable width written in the fabric header ('60" CW')
             mw = re.search(r'(\d{2,3})\s*(?:"|”|\'\'|INCH|IN)?\s*C\.?W\b', head.upper()) or \
@@ -416,6 +584,10 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
     for x in out:
         f = x['fields']
         x['ok'] = solve_marker(f, f.get('_yy_hint'), ref) if f else None
+        if f and f.get('gqty') and f.get('pqty_cands'):
+            # panels = garments x pieces per garment -> the reading divisible by Garment Q'ty (176 not 178)
+            ok = [p for p in f['pqty_cands'] if p % f['gqty'] == 0]
+            f['pqty'] = ok[0] if ok else f['pqty']
         x['block'].update(gqty=f.get('gqty'), marker_y=f.get('marker_y'), marker_in=f.get('inch'),
                           width=f.get('width'), eff=f.get('eff'), pqty=f.get('pqty'))
     return out

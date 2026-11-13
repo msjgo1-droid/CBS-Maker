@@ -55,15 +55,23 @@ def default_block_map(info, main_titles):
         pool = [b for b in blocks if b['heather'] == kind]
         sub = [b for b in pool if b['submitted']]
         return (sub or pool[-1:] or act)[0]
+    def dearest(b):
+        # same stage, same solid/heather, only the COLORWAY differs (e.g. BLACK vs BLACK SESAME + VARSITY)
+        # -> the buyer CBS goes out with the colorway whose open price is the highest
+        same = [x for x in blocks if x['heather'] == b['heather'] and x.get('stage_hdr') == b.get('stage_hdr')
+                and x.get('date_hdr') == b.get('date_hdr') and 'COLORWAY' in str(x.get('option') or '').upper()]
+        if len(same) > 1 and len({str(x.get('option')) for x in same}) > 1 and all(x.get('fob') for x in same):
+            return max(same, key=lambda x: x['fob'])
+        return b
     out = {}
     for t in main_titles:
         v = variant_of(t)
         if v == 'heather':
-            out[t] = pick(True)['idx']
+            out[t] = dearest(pick(True))['idx']
         elif v == 'solid':
-            out[t] = pick(False)['idx']
+            out[t] = dearest(pick(False))['idx']
         else:
-            out[t] = act[0]['idx']
+            out[t] = dearest(act[0])['idx']
     return out
 
 
