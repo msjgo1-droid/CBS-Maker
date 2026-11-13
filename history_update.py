@@ -15,10 +15,14 @@ from cbs_fill import read_internal_block, match_prev_lines
 from cbs_format import normalize_bytes, set_cells, subtotal_plan, highlight_cells
 from internal import read_internal, previous_stage_block, tab_date
 
-FIELDS = [  # (column key, label, money?)
+FIELDS = [  # (column key, label, money?) - i_* go to the internal REMARK, b_* to the open REMARK
     ('i_price', 'Price', True), ('i_yy', 'YY', False), ('i_loss', 'LOSS', False),
-    ('b_cif', 'CIF', True), ('b_price', 'Open Price', True), ('b_yy', 'Open YY', False), ('b_loss', 'Open LOSS', False),
+    ('b_cif', 'CIF', True), ('b_price', 'Price', True), ('b_yy', 'YY', False), ('b_loss', 'LOSS', False),
 ]
+
+
+# notes this tool wrote before (Korean / English versions) - replaced on every run, never the user's text
+APP_NOTE = re.compile(r'^(\[vs [^\]]+\]|\[[^\]]+ 대비\]|⚠ (Internal YY up|YY up|Open YY 0)\b)')
 
 
 def _num(v):
@@ -57,43 +61,52 @@ def compare(wv, ws_cur, cur_blk, heather):
     prev_blk = read_internal_block(ws_prev, r0, r1)
     tag = f'[vs {_short_tab(title)}]'
     m = match_prev_lines(cur_blk['lines'], prev_blk['lines'])
-    notes = []
+    notes = []          # (row, text, kind, line, side)  side: 'i' internal REMARK / 'b' open REMARK
     for i, a in enumerate(cur_blk['lines']):
         if i not in m:
             if a['yy'] or a['price']:
-                notes.append((a['row'], f'{tag} New item', 'new', a))
+                notes.append((a['row'], f'{tag} New item', 'new', a, 'i'))
             continue
         b = prev_blk['lines'][m[i]]
         va, vb = _vals(ws_cur, cur_blk, a), _vals(ws_prev, prev_blk, b)
-        ch = []
+        ch = {'i': [], 'b': []}
         for k, lab, money in FIELDS:
             x, y = va[k], vb[k]
             if x is None and y is None:
                 continue
             if x is None or y is None or round(x, 4) != round(y, 4):
                 arrow = '↑' if (x or 0) > (y or 0) else '↓'
-                ch.append(f'{lab} {_fmt(y, money)}→{_fmt(x, money)}{arrow}')
-        if ch:
-            notes.append((a['row'], f"{tag} {', '.join(ch)}", 'changed', a))
+                ch[k[0]].append(f'{lab} {_fmt(y, money)}→{_fmt(x, money)}{arrow}')
+        if ch['i']:
+            notes.append((a['row'], f"{tag} Internal: {', '.join(ch['i'])}", 'changed', a, 'i'))
+        if ch['b']:
+            notes.append((a['row'], f"{tag} Open: {', '.join(ch['b'])}", 'changed', a, 'b'))
         # internal YY up but open YY kept: fine for a closed MNMK, wrong if fit comment / spec made it bigger
         if va['i_yy'] and vb['i_yy'] and va['b_yy'] is not None and vb['b_yy'] is not None \
                 and round(va['i_yy'], 4) > round(vb['i_yy'], 4) and round(va['b_yy'], 4) == round(vb['b_yy'], 4):
             ratio = vb['b_yy'] / vb['i_yy'] if vb['i_yy'] else None
             sug = f", last ratio x{ratio:.4f} -> Open YY {va['i_yy'] * ratio:.4f}" if ratio else ''
-            notes.append((a['row'], f"⚠ YY up vs {_short_tab(title)} but Open YY unchanged - double check "
-                                    f"(if fit comment/spec, raise Open YY{sug})", 'yy_up', a))
+            notes.append((a['row'], f"⚠ Internal YY up vs {_short_tab(title)} but Open YY unchanged - double check "
+                                    f"(if fit comment/spec, raise Open YY{sug})", 'yy_up', a, 'b'))
     # open side empty while the internal side is filled -> the open FOB is missing that cost (not something we did)
     for a in cur_blk['lines']:
         va = _vals(ws_cur, cur_blk, a)
         if (va['i_yy'] or 0) > 0 and (va['i_price'] or 0) > 0 and not (va['b_yy'] or 0):
             al = ws_cur.cell(a['row'], cur_blk['cols']['b_actual_loss']).value if 'b_actual_loss' in cur_blk['cols'] else 'x'
             hint = ' (ACTUAL LOSS empty)' if al in (None, '') else ''
-            notes.append((a['row'], f'⚠ Open YY 0{hint} - open cost calculated as 0', 'open0', a))
+            notes.append((a['row'], f'⚠ Open YY 0{hint} - open cost calculated as 0', 'open0', a, 'b'))
     gone = [b for j, b in enumerate(prev_blk['lines']) if j not in set(m.values()) and (b['yy'] or b['price'])]
-    # CM
-    if cur_blk.get('cm_row') and (cur_blk.get('cm') or 0) != (prev_blk.get('cm') or 0):
-        notes.append((cur_blk['cm_row'], f"{tag} CM {_fmt(prev_blk.get('cm'), True)}→{_fmt(cur_blk.get('cm'), True)}",
-                      'changed', None))
+    # CM - internal CM (TTL) and open CM (open TTL) separately
+    cr, pr = cur_blk.get('cm_row'), prev_blk.get('cm_row')
+    if cr and pr:
+        for side, col, lab in (('i', 'i_ttl', 'Internal'), ('b', 'b_ttl', 'Open')):
+            cc, pc = cur_blk['cols'].get(col), prev_blk['cols'].get(col)
+            if not cc or not pc:
+                continue
+            x, y = _num(ws_cur.cell(cr, cc).value), _num(ws_prev.cell(pr, pc).value)
+            if (x is not None or y is not None) and (x is None or y is None or round(x, 4) != round(y, 4)):
+                arrow = '↑' if (x or 0) > (y or 0) else '↓'
+                notes.append((cr, f"{tag} {lab}: CM {_fmt(y, True)}→{_fmt(x, True)}{arrow}", 'changed', None, side))
     return dict(title=title, gone=gone, tag=tag), notes
 
 
@@ -119,27 +132,50 @@ def update(data, name, today=None):
         rep['blocks'].append(dict(variant='Heather' if b['heather'] else 'Solid',
                                   prev=prev['title'] if prev else None,
                                   gone=[f"{g['item'] or ''} {g['detail'] or ''}".strip() for g in (prev or {}).get('gone', [])]))
-        rc = blk['cols'].get('i_remark')
-        if not rc:
+        rcs = {'i': blk['cols'].get('i_remark'), 'b': blk['cols'].get('b_remark')}
+        if not rcs['i'] and not rcs['b']:
             continue
-        for row, note, kind, line in notes:
-            ref = f'{L(rc)}{row}'
+        # several notes for one cell are written together (internal and open REMARK are different cells)
+        per = {}
+        # cells that still hold notes from an earlier run of this tool -> rewritten (the user's own text stays)
+        for side in ('i', 'b'):
+            if rcs[side]:
+                for r in range(b['r0'], b['r1'] + 1):
+                    v = wsv.cell(r, rcs[side]).value
+                    if isinstance(v, str) and any(APP_NOTE.match(x.strip()) for x in v.split('\n')):
+                        per.setdefault(f'{L(rcs[side])}{r}', [])
+        for row, note, kind, line, side in notes:
+            rc = rcs[side] or rcs['i' if side == 'b' else 'b']
+            if rc != rcs[side] and side == 'b' and not note.startswith(('⚠', '[')):
+                note = 'Open: ' + note
+            per.setdefault(f'{L(rc)}{row}', []).append((note, kind, line))
+        for ref, items in per.items():
             fc = wsf[ref]
             old = wsv[ref].value
             if isinstance(fc.value, str) and fc.value.startswith('='):
-                rep['skipped'].append((ref, note))              # remark is a formula - leave it
+                rep['skipped'] += [(ref, n) for n, _, _ in items]   # remark is a formula - leave it
                 continue
             old_t = '' if old is None else (f'{old:g}' if isinstance(old, float) else str(old))
-            if note in old_t:
-                continue                                        # already written by an earlier run
-            new_t = ('\n' if old_t else '') + note
+            kept = [x for x in old_t.split('\n') if not APP_NOTE.match(x.strip())]
+            cleaned = len(kept) != len(old_t.split('\n'))
+            old_t = '\n'.join(kept).strip('\n') if cleaned else old_t
+            new_notes = [n for n, _, _ in items if n not in old_t]
+            if not new_notes and not cleaned:
+                continue
+            if not new_notes:
+                cells[ref] = ('t', old_t, None) if old_t else ('t', '', None)
+                continue
+            new_t = ('\n' if old_t else '') + '\n'.join(new_notes)
             font = fc.font
             cells[ref] = ('r', (old_t, new_t, font.name if font else None, font.sz if font else None), None)
-            if kind == 'open0':
-                rep['open0'].append(f"{(line or {}).get('detail') or ''} ({L(rc)}{row})")
-            rep['notes'].append(dict(variant='Heather' if b['heather'] else 'Solid', cell=ref,
-                                     item=(line or {}).get('detail') or (line or {}).get('item') or 'CM',
-                                     before=old_t, note=note))
+            for note, kind, line in items:
+                if note not in new_notes:
+                    continue
+                if kind == 'open0':
+                    rep['open0'].append(f"{(line or {}).get('detail') or ''} ({ref})")
+                rep['notes'].append(dict(variant='Heather' if b['heather'] else 'Solid', cell=ref,
+                                         item=(line or {}).get('detail') or (line or {}).get('item') or 'CM',
+                                         before=old_t, note=note))
     # tidy like 'CBS 만들기'
     out, fmt_log = normalize_bytes(data)
     plan, sub_log = subtotal_plan(calc)
