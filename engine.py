@@ -185,6 +185,8 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
     for ws in mains:
         b = info['blocks'][bmap[ws.title]]
         blk = read_internal_block(wsv, b['r0'], b['r1'], wf.worksheets[0])
+        for u in blk.get('unnamed') or []:
+            rep['warnings'].append(W('unnamed_cost', sheet=ws.title, row=u['row'], price=u['price'], ttl=round(u['ttl'], 2)))
         rep.setdefault('cif_lines', []).extend(
             dict(block=('heather' if b.get('heather') else 'solid'), tab=info.get('tab'), row=l['row'], key=l['key'],
                  cat=l['cat'], item=l['item'], detail=l['detail'], price=l['price'], cif=l['cif'], yy=l['yy'],
@@ -281,6 +283,13 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             # older run) -> its sheet is made here, in the internal's fabric order
             miss = [x for x in im if not x.get('_used') and x.get('part_main') is not False and x.get('_line')
                     and x['title'] not in out.sheetnames]
+            # sheet an older version named after a costing note ('6 29) Loss 5% Profits 8') and filled with
+            # the wrong picture -> replaced by the internal's real fabric sheets
+            for s_ in [s_ for s_ in out.worksheets if is_panel_sheet(s_) and
+                       re.search(r'LOSS|PROFIT|\bOH\b', s_.title, re.I)]:
+                if not any(x.get('_used') and x['title'] == s_.title for x in im) and miss:
+                    out.remove(s_)
+                    rep['warnings'].append(W('sheet_removed', sheet=s_.title))
             if miss:
                 layout = openpyxl.load_workbook(os.path.join(HERE, 'assets', 'panel_layout.xlsx')).worksheets[0]
                 for x in miss:
@@ -334,6 +343,12 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             if k in f and v not in (None, ''):
                 p.cell(*f[k]).value = (f'{v}"' if k == 'width' and str(v).replace('.', '').isdigit() else v)
     rep['panels'] = sync_panels(out, mains, info, rep['warnings'])
+    for x in (locals().get('im') or []):
+        hw = (x.get('fields') or {}).get('_hdr_width')
+        if hw and x['title'] in out.sheetnames:
+            fw = find_fields(out[x['title']], 1, 12).get('width')
+            if fw and out[x['title']].cell(*fw).value in (None, ''):
+                out[x['title']].cell(*fw).value = hw
     # what is still empty on the fabric sheets (asked for in the app, marker length needs Garment Q'ty)
     rep['warnings'] = [w for w in rep['warnings'] if w.get('code') != 'ocr_check']
     rep['panel_fields'] = []

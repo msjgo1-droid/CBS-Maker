@@ -16,6 +16,8 @@ def _norm(v):
 
 
 def _num(v):
+    if isinstance(v, str) and re.fullmatch(r'\s*-?\d+(\.\d+)?\s*', v):
+        return float(v)                  # number typed as text ('1') - Excel still multiplies it
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
@@ -64,6 +66,7 @@ def read_internal_block(ws, r0, r1, wsf=None):
     if _pf:
         stop = min(stop, min(_pf))                    # never read Profit/OH/Finance or 'Others' rows as items
     lines, cat, cm, after_cm, cm_row = [], 'fabric', None, False, None
+    unnamed = []
     for r in range(hdr + 1, stop):
         d = _s(ws.cell(r, cols['i_item']).value)
         e = _s(ws.cell(r, cols['i_detail']).value)
@@ -80,6 +83,10 @@ def read_internal_block(ws, r0, r1, wsf=None):
             ttl = _num(ws.cell(r, cols['b_ttl']).value)
             if ttl and not _s(e).upper().startswith('TTL'):  # e.g. 'Sublimation print' with only TTL $3.00 typed
                 price, lump = ttl, True
+        if price is not None and not (e or d):
+            t_ = _num(ws.cell(r, cols['b_ttl']).value)
+            if t_:
+                unnamed.append(dict(row=r, price=price, ttl=t_))   # in the FOB SUM but no item/detail name
         if price is None or not (e or d):
             continue
         nxt = r + 1
@@ -87,7 +94,12 @@ def read_internal_block(ws, r0, r1, wsf=None):
             else [ws.cell(nxt, k).value for k in range(cols['i_item'], cols['i_remark'] + 1)]
         parts = split_parts(wsf.cell(r, cols['i_yy']).value if wsf is not None and 'i_yy' in cols else None,
                             e, ws.cell(r, cols['i_remark']).value, *below) if not after_cm else None
-        lines.append(dict(row=r, cat=cat if after_cm else 'fabric', key=cat_key(cat) if after_cm else 'fabric',
+        # below CM nothing is fabric: trims without a category name ('5/8" E-band @Cuff') or with one of
+        # their own ('Slit pocket opening reinforcement', 'Bonding film') are trims
+        _k = cat_key(cat) if after_cm else 'fabric'
+        if after_cm and _k == 'fabric':
+            _k = 'trim'
+        lines.append(dict(row=r, cat=cat if after_cm else 'fabric', key=_k,
                           parts=parts,
                           item=d, detail=e, remark=_s(ws.cell(r, cols['i_remark']).value),
                           price=price,
@@ -114,7 +126,7 @@ def read_internal_block(ws, r0, r1, wsf=None):
             m = re.search(r'\b(ROUNDUP|ROUNDDOWN|ROUND)\s*\(', fml)
             if m:
                 rounding[key] = m.group(1)
-    return dict(lines=lines, cm=cm, rates=rates, cols=cols, cm_row=cm_row, rounding=rounding)
+    return dict(lines=lines, cm=cm, rates=rates, cols=cols, cm_row=cm_row, rounding=rounding, unnamed=unnamed)
 
 
 # ---------------- buyer side ----------------
@@ -634,7 +646,7 @@ def price_drops(cur_blk, prev_blk):
                              delta=round(d, 4)))
     if (cur_blk['cm'] or 0) < (prev_blk['cm'] or 0) - 1e-9:
         rows.append(dict(line='CM', item='CM', detail='', why=['cm'], cur=dict(cm=cur_blk['cm']),
-                         prev=dict(cm=prev_blk['cm']), delta=round(cur_blk['cm'] - prev_blk['cm'], 4)))
+                         prev=dict(cm=prev_blk['cm']), delta=round((cur_blk['cm'] or 0) - prev_blk['cm'], 4)))
     return rows
 
 

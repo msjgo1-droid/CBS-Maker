@@ -126,7 +126,14 @@ def read_internal(path, filename=''):
         hidden=[s.title for s in wf.worksheets if s.sheet_state != 'visible'],
         blocks=blocks)
     # pick the blocks that matter: submitted ones; else the last block
-    act = [b for b in blocks if b['submitted']] or blocks[-1:]
+    # nothing submitted yet -> the newest block (latest cost date; same date -> the top one), not the bottom one
+    import datetime as _dt
+
+    def _d(b):
+        v = b.get('date_hdr')
+        return v if isinstance(v, _dt.datetime) else _dt.datetime.min
+    newest = max(blocks, key=lambda b: (_d(b), -b['idx'])) if blocks else None
+    act = [b for b in blocks if b['submitted']] or ([newest] if newest else [])
     info['active'] = [b['idx'] for b in act]
     return info, wf, wv
 

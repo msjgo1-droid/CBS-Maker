@@ -392,6 +392,14 @@ def parse_fields(text):
     if gp:
         out['pqty_cands'] = ([out['pqty']] if out['pqty'] else []) + \
             [int(v) for v, _ in gp.most_common() if int(v) != out['pqty']]
+        if out['pqty']:
+            # whole-row read seen once (46) vs the same cell read 10 times as 48 -> the cell votes lead
+            sup = 2 * len(re.findall(r'@@PQ@@ %d\b' % out['pqty'], t)) + gp.get(str(out['pqty']), 0)
+            strong = [int(v) for v, n in gp.most_common() if n >= 5 and n >= 2 * sup and int(v) != out['pqty']]
+            if strong:
+                out['pqty_cands'] = [int(v) for v, _ in gp.most_common()] + \
+                    [v for v in out['pqty_cands'] if str(v) not in gp]
+                out['pqty'] = None
         out['pqty'] = out['pqty'] or out['pqty_cands'][0]
     if gg:
         out['gqty_cands'] = ([out['gqty']] if out['gqty'] else []) + \
@@ -492,6 +500,21 @@ def _is_marker_pic(p):
     return _colours(a, (0, 0, a.shape[1] - 1, a.shape[0] - 1)) >= 6
 
 
+def _hue_bins(png):
+    """How many different colours the cropped marker has (pieces of a marker: many; red note on yellow: 2)."""
+    import numpy as np
+    try:
+        im = Image.open(io.BytesIO(crop_marker(png)[0])).convert('HSV')
+    except Exception:
+        return 99
+    h = np.asarray(im).reshape(-1, 3)
+    h = h[(h[:, 1] > 80) & (h[:, 2] > 60)][:, 0]
+    if len(h) < 50:
+        return 0
+    cnt = np.bincount((h.astype(int) * 12) // 256, minlength=12)
+    return int((cnt >= 0.01 * len(h)).sum())
+
+
 def _yy_fits(l, y):
     vals = [l.get('iyy')] + list(l.get('parts') or [])
     return any(v and abs(v - y) <= 0.01 * v + 0.0015 for v in vals)
@@ -516,7 +539,15 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
                    and _is_marker_pic(p)], key=lambda p: (p['col'], p['row']))
     if not pics:
         return []
-    headers = {c.column: _s(c.value) for c in ws_values[1] if c.column >= 17 and _s(c.value)}
+    # fabric headers above the MNMK pictures: row 1, or row 2 when row 1 holds only a note
+    # ('6/29) Loss 5% / Profits 8% / OH 8% applied' in Q1, fabrics in R2 / Z2 / AI2 ...)
+    headers = {}
+    for r_ in (1, 2):
+        for c in ws_values[r_]:
+            v = _s(c.value)
+            if c.column >= 17 and v and c.column not in headers and \
+                    not re.search(r'LOSS\s*\d|PROFIT|\bOH\b', v, re.I):
+                headers[c.column] = v
     fabrics = [l for l in lines if l['key'] == 'fabric']
     out, used_titles = [], {}
     for n_, p in enumerate(pics):
@@ -540,6 +571,10 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
         f = parse_fields(_t) if png else {}
         if _t:
             f['_binding'] = bool(re.search(r'BINDING', _t.split('@@')[0], re.I))
+        if not any(f.get(k) for k in ('width', 'eff', 'gqty', 'pqty', 'yy')) and \
+                not re.search(r'WIDTH|MARKER|EFFIC|GARMENT|PANEL\s*Q|PLACED', _t or '', re.I) and \
+                _hue_bins(png) < 4:
+            continue        # coloured sketch / price note (no MNMK table, nothing read) - not a marker
         if ln is None and f.get('yy'):
             # picture YY (e.g. 0.776) = internal YY of one fabric line -> that line (Self), not the fabric code
             near = [l for l in fabrics if l.get('iyy') and abs(l['iyy'] - f['yy']) <= 0.01 * l['iyy'] + 0.0015]
@@ -571,7 +606,8 @@ def read_internal_mnmk(internal_bytes, ws_values, lines, gender, sheet_index=Non
                 re.search(r'\bC\.?W\.?\s*:?\s*(\d{2,3})\s*(?:"|”)', head.upper()) or \
                 re.search(r'(\d{2,3})\s*C\.?W\b', ((ln or {}).get('remark') or '') + ' ' + ((ln or {}).get('detail') or ''), re.I)
             if mw:
-                f['width'] = f'{mw.group(1)}"'
+                # fabric CW from the header - used only when the buyer template has no Cuttable Width either
+                f['_hdr_width'] = f'{mw.group(1)}"'
         ok = None
         f['_yy_hint'] = ln.get('iyy') if ln else None
         marker_png = crop_marker(png)[0] if png else None

@@ -188,6 +188,42 @@ def _colours(a, box):
     return int((c >= 0.01 * b.shape[0] * b.shape[1]).sum())
 
 
+def _runs(row):
+    best=(0,0,0); s=None
+    for x,v in enumerate(list(row)+[False]):
+        if v and s is None: s=x
+        if not v and s is not None:
+            if x-s>best[0]: best=(x-s,s,x-1)
+            s=None
+    return best
+def _crop_by_cad_grey(a):
+    """Tiny marker strip (zipper garage, 0.001 yd) above the grey empty part of the CAD window."""
+    r,g,b=a[...,0],a[...,1],a[...,2]
+    grey=(abs(r-g)<=4)&(abs(g-b)<=4)&(r>=150)&(r<=200)
+    rr=[_runs(grey[y]) for y in range(a.shape[0])]
+    best=None; cur=[]
+    for y,(L,x0,x1) in enumerate(rr+[(0,0,0)]):
+        if L>=50 and (not cur or abs(x0-cur[-1][1])<=6 and abs(x1-cur[-1][2])<=6):
+            cur.append((y,x0,x1))
+        else:
+            if len(cur)>=15 and (best is None or len(cur)>len(best)): best=cur
+            cur=[(y,x0,x1)] if L>=50 else []
+    if not best: return None
+    gy0=best[0][0]; gx0=min(c[1] for c in best); gx1=max(c[2] for c in best)
+    reg=a[:gy0, gx0:gx1+1]
+    sat=(reg.max(2)-reg.min(2))>60
+    rows=np.where(sat.sum(1)>0)[0]
+    if not len(rows): return None
+    end=rows[-1]
+    if gy0-end>40: return None
+    start=end
+    for y in rows[::-1]:
+        if start-y>12: break
+        start=y
+    cols=np.where(sat[start:end+1].sum(0)>0)[0]
+    return (gx0+cols.min(), start, gx0+cols.max(), end)
+
+
 def crop_marker(data, pad=3):
     """Crop a CAD screenshot down to the marker only."""
     im = Image.open(io.BytesIO(data)).convert('RGB')
@@ -212,6 +248,10 @@ def crop_marker(data, pad=3):
         if pb and (inside or (abs(pb[1] - box[1]) <= 15 and abs(pb[3] - box[3]) <= 15)) and \
                 (pb[0] < box[0] - 10 or pb[2] > box[2] + 10 or pb[1] < box[1] - 10 or pb[3] > box[3] + 10):
             box = (min(box[0], pb[0]), min(box[1], pb[1]), max(box[2], pb[2]), max(box[3], pb[3]))
+    if box is None:
+        gb = _crop_by_cad_grey(a)
+        if gb is not None and _colours(a, gb) >= 6:
+            box = gb
     if box is None:
         return data, im.size, im.size
     x0, y0, x1, y1 = box
