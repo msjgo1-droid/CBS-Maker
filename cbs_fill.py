@@ -66,7 +66,7 @@ def read_internal_block(ws, r0, r1, wsf=None):
     if _pf:
         stop = min(stop, min(_pf))                    # never read Profit/OH/Finance or 'Others' rows as items
     lines, cat, cm, after_cm, cm_row = [], 'fabric', None, False, None
-    unnamed = []
+    unnamed, nocif = [], []
     for r in range(hdr + 1, stop):
         d = _s(ws.cell(r, cols['i_item']).value)
         e = _s(ws.cell(r, cols['i_detail']).value)
@@ -109,6 +109,14 @@ def read_internal_block(ws, r0, r1, wsf=None):
                           cif=None if lump else (_num(ws.cell(r, cols['b_cif']).value) if 'b_cif' in cols else None),
                           lump=lump,
                           used=False))
+        ln_ = lines[-1]
+        tv = _num(ws.cell(r, cols['b_ttl']).value)
+        if not lump and ln_['cif'] and tv is not None and ln_['yy']:
+            without = ln_['price'] * ln_['yy'] * ln_['loss']
+            if abs(tv - without) < 1e-6 and abs((ln_['price'] + ln_['cif']) * ln_['yy'] * ln_['loss'] - tv) > 1e-4:
+                # TTL formula skips the CIF cell (e.g. =(M25+K25)*N25*O25 points at ACTUAL LOSS, not CIF)
+                nocif.append(dict(row=r, detail=e, cif=ln_['cif'],
+                                  ttl=round(tv, 4), ttl_cif=round((ln_['price'] + ln_['cif']) * ln_['yy'] * ln_['loss'], 4)))
     from cbs_format import profit_labels
     rates = {}
     for key, c in profit_labels(ws, hdr + 1, r1).items():
@@ -126,7 +134,7 @@ def read_internal_block(ws, r0, r1, wsf=None):
             m = re.search(r'\b(ROUNDUP|ROUNDDOWN|ROUND)\s*\(', fml)
             if m:
                 rounding[key] = m.group(1)
-    return dict(lines=lines, cm=cm, rates=rates, cols=cols, cm_row=cm_row, rounding=rounding, unnamed=unnamed)
+    return dict(lines=lines, cm=cm, rates=rates, cols=cols, cm_row=cm_row, rounding=rounding, unnamed=unnamed, nocif=nocif)
 
 
 # ---------------- buyer side ----------------

@@ -185,12 +185,15 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
     for ws in mains:
         b = info['blocks'][bmap[ws.title]]
         blk = read_internal_block(wsv, b['r0'], b['r1'], wf.worksheets[0])
+        for u in blk.get('nocif') or []:
+            rep['warnings'].append(W('ttl_nocif', sheet=ws.title, row=u['row'], detail=u['detail'], cif=u['cif'],
+                                     ttl=u['ttl'], ttl_cif=u['ttl_cif']))
         for u in blk.get('unnamed') or []:
             rep['warnings'].append(W('unnamed_cost', sheet=ws.title, row=u['row'], price=u['price'], ttl=round(u['ttl'], 2)))
         rep.setdefault('cif_lines', []).extend(
             dict(block=('heather' if b.get('heather') else 'solid'), tab=info.get('tab'), row=l['row'], key=l['key'],
                  cat=l['cat'], item=l['item'], detail=l['detail'], price=l['price'], cif=l['cif'], yy=l['yy'],
-                 cif_col=blk['cols'].get('b_cif'), note_col=(blk['cols'].get('b_ttl') or 0) + 1)
+                 remark=l.get('remark') or '', cif_col=blk['cols'].get('b_cif'), note_col=(blk['cols'].get('b_ttl') or 0) + 1)
             for l in blk['lines'] if not l['lump'] and l['yy'])      # internal CIF as typed (record + sanity check)
         pv = previous_stage_block(wv, b['heather'])
         if pv:
@@ -679,7 +682,9 @@ def cif_marks(rep, iname, calc_bytes, extra_hist=None):
     style = find_style(clean_name(iname)) or ''
     recs = fcif.records(style, fcif.fstore.season_code(clean_name(iname)) or '', clean_name(iname), lines)
     rep['cif_recs'] = recs
-    issues = fcif.check(recs, cif_history(extra_hist))
+    # 1) the Trims CIF guide is absolute; 2) items it does not cover -> compared with other styles
+    issues = fcif.guide_check(recs)
+    issues += fcif.check([r for r in recs if not fcif.guide_rule(r)], cif_history(extra_hist))
     rep['cif_issues'] = issues
     if not issues:
         return []
@@ -694,9 +699,13 @@ def cif_marks(rep, iname, calc_bytes, extra_hist=None):
             nref = f"{get_column_letter(l['note_col'])}{l['row']}" if l.get('note_col', 1) > 1 else None
             if nref and wv[nref].value not in (None, ''):
                 nref = None                                     # never overwrite a remark
-            why = {'missing': 'CIF missing', 'differs': 'Check CIF', 'high': 'CIF high', 'low': 'CIF low'}[x['why']]
-            out.append(dict(ref=ref, note_ref=nref, empty=not l['cif'],
-                            note=f"⚠ {why}: {x['cif'] or 0:g} → usually {x['usual']:g} (other styles {x['seen']})"))
+            why = {'missing': 'CIF missing', 'differs': 'Check CIF', 'high': 'CIF high', 'low': 'CIF low',
+                   'rule': 'CIF rule'}[x['why']]
+            if x.get('rule'):
+                note = f"⚠ {why}: {x['cif'] or 0:g} → must be {x['want']} (CIF guide: {x['rule']})"
+            else:
+                note = f"⚠ {why}: {x['cif'] or 0:g} → usually {x['usual']:g} (other styles {x['seen']})"
+            out.append(dict(ref=ref, note_ref=nref, empty=not l['cif'], note=note))
     rep['warnings'].append(W('cif_bad', n=len(issues)))
     return out
 

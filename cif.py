@@ -71,7 +71,8 @@ def records(style, season, file, cif_lines):
         out.append(dict(season=season or '', style=str(style), tab=l.get('tab') or '', section=l.get('key'),
                         type=item_type(l),
                         item=(l.get('item') or '').strip(), detail=(l.get('detail') or '').strip(),
-                        price=l.get('price'), cif=l.get('cif'), file=file or '', saved_at=now))
+                        price=l.get('price'), cif=l.get('cif'), file=file or '', saved_at=now,
+                        key=l.get('key'), remark=l.get('remark') or ''))
     return out
 
 
@@ -134,6 +135,68 @@ def check(new, hist, min_n=3):
             out.append(dict(type=r['type'], item=r['item'], detail=r['detail'], price=r.get('price'), cif=r['cif'],
                             usual=usual, seen=_common(base[base > 0] if why != 'missing' else base), n=int(len(base)),
                             why=why))
+    return out
+
+
+# ---------------- Trims CIF guide (fixed rule, always wins over history) ----------------
+# (name shown in the note, sections it applies to, regex on item + detail + remark, {sourcing: CIF})
+# per pc / per yard / per pair as in the guide; CIF is an amount, not %
+GUIDE = [
+    ('Pad/Cups', ('trim',), r'\bpads?\b|\bcups?\b|bra\s*cup', {'Air': 0.1}),
+    ('Interlining (Fusing)', ('fabric', 'trim'), r'interlin|fusing|fusible', {'Ocean': 0.10}),
+    ('Metal Hardware (eyelet/grommet)', ('trim',), r'eyelet|grommet', {'Local': 0.01, 'Air': 0.02}),
+    ('Bemis tape roll', ('trim',), r'bemis.*roll|bonding.*roll|adhesive.*roll', {'Air': 0.01}),
+    # bonding by the yard (Ocean 0.10) or as a tape roll (Air, light tape 0.01) - UOM decides, both allowed
+    ('Bemis Bonding (yard) / Bemis tape roll', ('trim',), r'bemis|bonding|bonded|adhesive|sew\s*free',
+     {'Ocean': 0.10, 'Air': 0.01}),
+    ('Mobilon Tape', ('trim',), r'mobil', {'Local': 0.004, 'Air': 0.01}),
+    ('Zipper puller / Metal Hardware', ('trim',), r'pull(er)?\b|zip(per)?\s*pull', {'Local': 0.01, 'Air': 0.02}),
+    ('Zippers', ('trim',), r'zip', {'Local': 0.01, 'Air': 0.07}),
+    ('Buttons', ('trim',), r'button', {'Local': 0.01, 'Air': 0.01}),
+    ('Metal Hardware (snap/rivet/buckle/toggle/ring/slide/hook)', ('trim',),
+     r'snap|rivet|buckle|toggle|\bring\b|slider?s?\b|hook|eyelet|grommet|cord\s*lock|stopper', {'Local': 0.01, 'Air': 0.02}),
+    ('Heavy Tapes / Elastic (elastic, gripper, bungee, drawcord)', ('trim',),
+     r'elastic|gripper|bungee|draw\s*cord|drawstring', {'Air': 0.05}),
+    ('Labels (Chi, Logo)', ('label',), r'\bchi(na|nese)?\b|logo', {'Air': 0.02}),
+    ('Labels (Main/Size/Care/Joker - SML)', ('label',), r'label|care|size|coo|joker|main', {'Local': 0.004}),
+    ('Hang tag / Sensor tag / Match book / Price tkt', ('pack', 'label'),
+     r'hang\s*-?\s*tag|sensor|match\s*book|price\s*t(ic)?k?t|\btag\b', {'Local': 0.004}),
+]
+GUIDE_SKIP = r'print|heat\s*transfer|\bhtl?\b|silicon|reflect|emboss|transfer'
+SOURCE = {'Air': r'\bair\b', 'Ocean': r'\bocean\b|\bsea\b', 'Local': r'\blocal'}
+
+
+def guide_rule(line):
+    """The guide row for an internal line (or None) and the CIF values it may have."""
+    key = line.get('key') or line.get('section')
+    txt = f"{line.get('item') or ''} {line.get('detail') or ''}".lower()
+    if re.search(GUIDE_SKIP, f"{line.get('detail') or ''}".lower()):
+        return None                     # prints / heat transfers / pad prints are not in the trims guide
+    for name, secs, pat, vals in GUIDE:
+        if key in secs and re.search(pat, txt):
+            if key == 'fabric' and name != 'Interlining (Fusing)':
+                continue
+            rem = str(line.get('remark') or '').lower()
+            src = [k for k, rx in SOURCE.items() if k in vals and re.search(rx, rem + ' ' + txt)]
+            return name, ({k: vals[k] for k in src} if src else vals)
+    return None
+
+
+def guide_check(new):
+    """Lines whose CIF is not what the Trims CIF guide says -> [dict(..., why='rule', usual, seen)]."""
+    out = []
+    for r in new:
+        g = guide_rule(r)
+        if not g:
+            continue
+        name, vals = g
+        cif = round(float(r.get('cif') or 0), 4)
+        if any(abs(cif - v) < 1e-6 for v in vals.values()):
+            continue
+        want = ' or '.join(f'{v:g} ({k})' for k, v in vals.items())
+        out.append(dict(type=r['type'], item=r['item'], detail=r['detail'], price=r.get('price'), cif=r.get('cif'),
+                        usual=list(vals.values())[0], seen=f'{want} - {name}', n=0,
+                        why='rule' if cif else 'missing', rule=name, want=want))
     return out
 
 

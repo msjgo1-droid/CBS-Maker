@@ -196,16 +196,21 @@ def records_from_buyer_file(name, data, fobs=None):
 
 # ---------------- report ----------------
 def report_xlsx(df):
-    """Excel in the same look as the FOB summary table."""
+    """Excel in the same look as the FOB summary table, with the submitted date (from the buyer file name)."""
     from openpyxl.styles import Alignment, Border, Font, Side
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'FOB'
-    hdr = ['SEASON', 'STAGE', 'STYLE#', 'COLOR', 'FOB (USD)']
+    hdr = ['SEASON', 'STAGE', 'STYLE#', 'COLOR', 'FOB (USD)', 'DATE']
     ws.append(hdr)
     for _, r in df.iterrows():
+        d = r.get('date')
+        try:
+            d = dt.date.fromisoformat(str(d)[:10]) if d not in (None, '') and str(d) != 'nan' else None
+        except ValueError:
+            d = str(d)
         ws.append([r['season'], r['stage'], int(r['style']) if str(r['style']).isdigit() else r['style'],
-                   r['color'], float(r['fob'])])
+                   r['color'], float(r['fob']), d])
     thin = Side(style='thin')
     for row in ws.iter_rows():
         for c in row:
@@ -215,7 +220,9 @@ def report_xlsx(df):
                 c.font = Font(bold=True)
             elif c.column == 5:
                 c.number_format = '"$"#,##0.00'
-    for col, w in zip('ABCDE', (10, 10, 12, 22, 14)):
+            elif c.column == 6:
+                c.number_format = 'mm/dd/yyyy'
+    for col, w in zip('ABCDEF', (10, 10, 12, 22, 14, 13)):
         ws.column_dimensions[col].width = w
     buf = io.BytesIO()
     wb.save(buf)
