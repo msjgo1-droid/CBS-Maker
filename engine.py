@@ -68,7 +68,11 @@ def default_block_map(info, main_titles):
             return max(same, key=lambda x: x['fob'])
         return b
     out = {}
+    cw = {colorway_name(b).lower(): b['idx'] for b in blocks if 'COLORWAY' in str(b.get('option') or '').upper()}
     for t in main_titles:
+        if t.strip().lower() in cw:
+            out[t] = cw[t.strip().lower()]
+            continue
         v = variant_of(t)
         if v == 'heather':
             out[t] = dearest(pick(True))['idx']
@@ -77,6 +81,35 @@ def default_block_map(info, main_titles):
         else:
             out[t] = dearest(act[0])['idx']
     return out
+
+
+def colorway_name(b):
+    """'COLORWAY: FROST / PINK CLAY' -> 'FROST - PINK CLAY' (valid sheet title)."""
+    m = re.search(r'COLORWAY\s*:?\s*([^\n]+)', str(b.get('option') or ''), re.I)
+    t = (m.group(1) if m else str(b.get('option') or '')).strip()
+    t = re.sub(r'\s*[/\\]\s*', ' - ', t)
+    t = re.sub(r'[\[\]:*?]', ' ', t)
+    return re.sub(r'\s+', ' ', t).strip()[:31] or f"Colorway {b['idx'] + 1}"
+
+
+def colorway_group(info, b):
+    """Blocks of the same date and solid/heather kind that are COLORWAY options of b (top first)."""
+    same = [x for x in info['blocks'] if x['heather'] == b['heather'] and x.get('date_hdr') == b.get('date_hdr')
+            and 'COLORWAY' in str(x.get('option') or '').upper()]
+    if len(same) > 1 and len({str(x.get('option')) for x in same}) > 1:
+        return same
+    return [b]
+
+
+def colorways_differ(wv, wf, group):
+    """True when the colorways use different materials / prices (logo codes per colour ...), not only another name."""
+    sig = []
+    for b in group:
+        blk = read_internal_block(wv.worksheets[0], b['r0'], b['r1'], wf.worksheets[0])
+        sig.append(sorted((l['key'], (l['detail'] or '').strip().lower(), str(l.get('remark') or '').strip().lower(),
+                           round(l['price'] or 0, 4), round(l['b_price'] or 0, 4) if l.get('b_price') is not None else None)
+                          for l in blk['lines']))
+    return any(x != sig[0] for x in sig[1:])
 
 
 def make_filename(ref_name, info, today=None):
@@ -165,6 +198,26 @@ def generate(internal, internal_name, base=None, base_name='', prev=None, prev_n
             for k, t in enumerate(prev_mains[1:], 1):
                 copy_sheet(src, out, t, out.worksheets.index(src) + k)
             mains = [s for s in out.worksheets if is_main_sheet(s)]
+    # same stage, colorways with different materials (logo code per colour ...) -> every colorway gets its own
+    # main sheet, like Solid / Heather of FlyLux; detail (panel) sheets stay shared (same YY)
+    if len(mains) == 1 and not block_map and variant_of(mains[0].title) is None and \
+            mains[0].title.strip().lower() not in {colorway_name(b).lower() for b in info['blocks']}:
+        act0 = next((b for b in info['blocks'] if b['idx'] in info['active']), None)
+        grp = colorway_group(info, act0) if act0 else []
+        if len(grp) > 1 and colorways_differ(wv, wf, grp):
+            src = mains[0]
+            names = []
+            for b in grp:
+                n_ = colorway_name(b)
+                while n_ in names or (n_ in out.sheetnames and n_ != src.title):
+                    n_ = n_[:28] + f' {len(names) + 1}'
+                names.append(n_)
+            src.title = names[0]
+            for k, n_ in enumerate(names[1:], 1):
+                copy_sheet(src, out, n_, out.worksheets.index(src) + k)
+            mains = [s for s in out.worksheets if is_main_sheet(s)]
+            block_map = {n_: b['idx'] for n_, b in zip(names, grp)}
+            rep['warnings'].append(W('colorways', names=', '.join(names)))
     bmap = dict(default_block_map(info, [s.title for s in mains]), **(block_map or {}))
     psplit = prev_split_map(prev_wb) if prev_wb else {}
 

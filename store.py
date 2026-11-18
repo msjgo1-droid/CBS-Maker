@@ -159,8 +159,10 @@ def parse_name(name):
 def color_of(title, ws=None, name=None):
     t = title.lower()
     c = 'HEATHER' if 'heather' in t and 'solid' not in t else 'SOLID'
+    if c == 'SOLID' and 'solid' not in t and not re.search(r'template|^sheet', t):
+        c = f'SOLID - {title.strip().upper()}'          # colorway main sheet (BLACK / FROST - PINK CLAY)
     if 'print' in t or (name and is_print(name)):
-        c = 'PRINT' if c == 'SOLID' else 'HEATHER PRINT'
+        c = 'PRINT' if c == 'SOLID' else 'HEATHER PRINT' if c == 'HEATHER' else c.replace('SOLID', 'PRINT', 1)
     return c
 
 

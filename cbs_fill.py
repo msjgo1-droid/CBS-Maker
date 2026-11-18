@@ -492,8 +492,16 @@ def write_line(ws, r, c, ln, buyer_price, changes, new=False):
     _set(ws, r, c['net'], round(ln['yy'], 4), changes, t)
     _set(ws, r, c['loss'], round(ln['loss'] - 1, 4), changes, t)
     if new:
-        _set(ws, r, c['price'], ln['price'], changes, t)
-        _set(ws, r, c['override'], None, changes, t)
+        # added row: price goes to Price Override like every other row (Price itself stays $0)
+        _set(ws, r, c['price'], 0, changes, t)
+        _set(ws, r, c['override'], ln['price'], changes, t)
+        src = next((rr for rr in range(1, ws.max_row + 1) if rr != r and
+                    isinstance(ws.cell(rr, c['override']).value, (int, float)) and ws.cell(rr, c['override']).fill.fgColor.rgb
+                    not in (None, '00000000')), None)
+        if src:                                       # same yellow fill / $ format as the other overrides
+            from copy import copy as _cp
+            ws.cell(r, c['override']).fill = _cp(ws.cell(src, c['override']).fill)
+            ws.cell(r, c['override']).number_format = ws.cell(src, c['override']).number_format
     else:
         _set(ws, r, c['override'], None if abs((buyer_price or 0) - ln['price']) < 1e-9 else ln['price'], changes, t)
     _set(ws, r, c['freight_ovr'], ln['cif'] if ln['cif'] else None, changes, t)
